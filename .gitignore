@@ -7,3 +7,6 @@ mailbox.db-wal
 mailbox.db-shm
 .env
 *.log
+
+# Agent session transcripts
+codex-session-*.md
