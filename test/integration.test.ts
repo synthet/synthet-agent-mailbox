@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startAdapter } from "../src/adapter.js";
-import { RemoteMailbox } from "../src/remote.js";
+import { parseMailboxUrls, RemoteMailbox } from "../src/remote.js";
 import { startMailbox, type RunningMailbox } from "../src/server.js";
 import type { Envelope } from "../src/types.js";
 
@@ -136,6 +136,32 @@ test("adapter delivers mail to the other PC and queues while the host is down", 
     const healthBody = (await health.json()) as { messages?: number };
     assert.equal(healthBody.messages, undefined);
 
+    const base = adapter.url.replace(/\/mcp$/, "");
+    const page = await fetch(`${base}/dashboard`);
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /Mailbox dashboard/);
+    const api = await fetch(`${base}/api/dashboard`);
+    assert.equal(api.status, 200);
+    const apiText = await api.text();
+    assert(!apiText.includes(LAPTOP_TOKEN));
+    const snapshot = JSON.parse(apiText) as {
+      agent: { id: string };
+      mailbox: { connected: boolean };
+      recent: Array<{ message: Envelope }>;
+    };
+    assert.equal(snapshot.agent.id, "laptop-reviewer");
+    assert.equal(snapshot.mailbox.connected, true);
+    assert(snapshot.recent.some((entry) => entry.message.message_id === task.message.message_id));
+    const rebound = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(`${base}/api/dashboard`, { headers: { host: "evil.example" } }, (response) => {
+        response.resume();
+        resolve(response.statusCode ?? 0);
+      });
+      request.on("error", reject);
+      request.end();
+    });
+    assert.equal(rebound, 403);
+
     const denied = await fetch(`${mailbox.url}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     assert.equal(denied.status, 401);
     const log = await fetch(`http://127.0.0.1:${mailbox.port}/log`, {
@@ -147,6 +173,35 @@ test("adapter delivers mail to the other PC and queues while the host is down", 
     await desktop?.close();
     await adapter.close();
     await mailbox?.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fails over to the next MAILBOX_URL route and keeps using it", { timeout: 20_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mailbox-"));
+  const deadPort = await freePort();
+  const mailbox = await startMailbox({
+    port: 0,
+    bind: "127.0.0.1",
+    dataDir: join(dir, "mailbox"),
+    agentsFile: agentsFile(dir),
+  });
+  try {
+    const dead = `http://127.0.0.1:${deadPort}/mcp`;
+    const remote = new RemoteMailbox(`${dead}, ${mailbox.url}`, DESKTOP_TOKEN, 2_000);
+    assert.deepEqual(remote.candidateUrls, [dead, mailbox.url]);
+    const me = await remote.call<{ agent_id: string }>("whoami");
+    assert.equal(me.agent_id, "desktop-builder");
+    assert.equal(remote.currentUrl, mailbox.url);
+
+    const wrongToken = new RemoteMailbox([dead, mailbox.url], "not-a-real-token-value", 2_000);
+    await assert.rejects(wrongToken.call("whoami"));
+    assert.throws(() => parseMailboxUrls(" , "), /empty/);
+    assert.throws(() => parseMailboxUrls("ftp://host/mcp"), /http or https/);
+    await remote.close();
+    await wrongToken.close();
+  } finally {
+    await mailbox.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

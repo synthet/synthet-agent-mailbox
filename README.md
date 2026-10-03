@@ -237,7 +237,7 @@ npm test
 | `BIND`, `PORT` | Mailbox listen address. Default `127.0.0.1:8787`. |
 | `AGENTS_FILE` | Host identity file. Default `agents.json`. |
 | `DATA_DIR` | Mailbox database and log. Default `data/mailbox`. |
-| `MAILBOX_URL` | Adapter's mailbox endpoint. |
+| `MAILBOX_URL` | Adapter's mailbox endpoint. Comma-separate several routes to the same host (for example its Wi-Fi and Ethernet addresses); the adapter fails over to the next one when a call cannot connect and keeps using the one that answers. Do not list two different mailbox hosts. |
 | `AGENT_ID`, `AGENT_TOKEN` | This PC's identity. Must match `agents.json` on the host. |
 | `ADAPTER_PORT` | Local MCP port. Default `8788`. |
 | `WAKE`, `WAKE_WORKSPACE` | How to start an agent turn for new mail. |

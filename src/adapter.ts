@@ -9,8 +9,9 @@ import { isLoopback, originAllowed, tokensEqual } from "./config.js";
 import { MailboxError, RemoteError } from "./errors.js";
 import { formatEnvelopeLog } from "./mailbox.js";
 import { LocalQueue } from "./local-queue.js";
-import { RemoteMailbox } from "./remote.js";
+import { parseMailboxUrls, RemoteMailbox } from "./remote.js";
 import { bodySchema, fetchShape, messageIdShape, sendShape, threadShape } from "./schemas.js";
+import { DASHBOARD_HTML } from "./dashboard.js";
 import { handleMcp } from "./server.js";
 import type { Agent, Envelope, SendInput } from "./types.js";
 import { MESSAGE_TYPES } from "./types.js";
@@ -34,7 +35,8 @@ const replySchema = z.object({
 });
 
 export interface AdapterServerOptions {
-  mailboxUrl: string;
+  /** One URL, or several comma-separated routes to the same mailbox host. */
+  mailboxUrl: string | string[];
   token: string;
   agentId: string;
   port: number;
@@ -86,6 +88,7 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
   let stopped: Error | null = null;
   let polling = false;
   let waking = false;
+  let actualPort = options.port;
 
   function note(line: string): void {
     try {
@@ -310,6 +313,65 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
       res.type("text/plain").send("");
     }
   });
+  // Read-only local dashboard. Same-origin only: no CORS headers, and the Host header must be loopback
+  // so a hostile web page cannot read it through DNS rebinding.
+  function loopbackHost(req: Request): boolean {
+    const host = (req.header("host") ?? "").toLowerCase();
+    return host === `127.0.0.1:${actualPort}` || host === `localhost:${actualPort}` || host === `[::1]:${actualPort}`;
+  }
+  app.get("/dashboard", (req, res) => {
+    if (!loopbackHost(req)) {
+      res.status(403).type("text/plain").send("Forbidden host");
+      return;
+    }
+    res
+      .set("Cache-Control", "no-store")
+      .set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
+      .set("X-Content-Type-Options", "nosniff")
+      .type("html")
+      .send(DASHBOARD_HTML);
+  });
+  app.get("/api/dashboard", async (req, res) => {
+    if (!loopbackHost(req)) {
+      res.status(403).json({ error: "Forbidden host" });
+      return;
+    }
+    const attempt = async <T,>(call: () => Promise<T>): Promise<{ value: T | null; error: string | null }> => {
+      try {
+        return { value: await call(), error: null };
+      } catch (error) {
+        return { value: null, error: error instanceof Error ? error.message : String(error) };
+      }
+    };
+    const [agents, remoteStatus] = identityOk
+      ? await Promise.all([attempt(() => remote.call("list_agents")), attempt(() => remote.call("queue_status"))])
+      : [{ value: null, error: "mailbox unreachable" }, { value: null, error: "mailbox unreachable" }];
+    let log = "";
+    try {
+      log = readFileSync(logPath, "utf8").slice(-6000);
+    } catch {
+      log = "";
+    }
+    res.set("Cache-Control", "no-store").json({
+      generated_at: new Date().toISOString(),
+      agent: profile,
+      mailbox: {
+        url: remote.currentUrl,
+        candidates: remote.candidateUrls,
+        connected: identityOk,
+        fatal: stopped ? stopped.message : null,
+      },
+      wake: { mode: options.wake, client: options.wakeClient ?? "cursor" },
+      agents: agents.value,
+      agents_error: agents.error,
+      remote: remoteStatus.value,
+      remote_error: remoteStatus.error,
+      local: queue.counts(),
+      outbox: queue.outboxRows(20),
+      recent: queue.recent(25),
+      log,
+    });
+  });
   app.post("/mcp", express.json({ limit: "1mb" }), async (req, res) => {
     if (!originAllowed(req.header("origin") || undefined, allowedOrigins)) {
       res.status(403).json({ error: "Forbidden origin" });
@@ -472,6 +534,7 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
   await listen(server, options.port, options.bind);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("adapter did not bind a TCP port");
+  actualPort = address.port;
   const url = `http://127.0.0.1:${address.port}/mcp`;
   writeFileSync(
     join(options.dataDir, "cursor-mcp.json"),
@@ -574,7 +637,7 @@ export function adapterOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): Ada
     throw new Error(`WAKE_WORKSPACE is required when WAKE_CLIENT=${wakeClient} and WAKE is enabled.`);
   }
   return {
-    mailboxUrl,
+    mailboxUrl: parseMailboxUrls(mailboxUrl),
     token,
     agentId,
     port: Number(env.ADAPTER_PORT ?? 8788),
