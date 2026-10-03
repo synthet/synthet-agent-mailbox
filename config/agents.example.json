@@ -1,0 +1,19 @@
+{
+  "maxTurns": 30,
+  "maxOpenTasks": 10,
+  "maxAttempts": 5,
+  "agents": [
+    {
+      "id": "desktop-builder",
+      "token": "replace-me-desktop-builder",
+      "capabilities": ["build", "edit", "test"],
+      "projects": ["*"]
+    },
+    {
+      "id": "laptop-reviewer",
+      "token": "replace-me-laptop-reviewer",
+      "capabilities": ["review", "read"],
+      "projects": ["*"]
+    }
+  ]
+}

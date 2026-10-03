@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+.env
+agents.json
+*.db
+*.db-shm
+*.db-wal
+*.log
+codex-session-*.md

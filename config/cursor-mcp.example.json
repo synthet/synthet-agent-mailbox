@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "agent-mailbox": {
+      "url": "http://127.0.0.1:8788/mcp",
+      "headers": {
+        "Authorization": "Bearer PASTE_THIS_PCS_AGENT_TOKEN"
+      }
+    }
+  }
+}

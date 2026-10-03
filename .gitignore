@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+agents.json
+mailbox.db
+mailbox.db-wal
+mailbox.db-shm
+.env
+*.log
