@@ -1,23 +1,6 @@
-# Mailbox host in Docker. Remote PCs in the LAN reach it at http://<this-PC-LAN-IP>:${MAILBOX_PORT}/mcp
-# with their own agent token. agents.json stays on this PC and is mounted read-only.
 services:
-  mailbox:
-    build:
-      context: .
-      target: mailbox
-    image: mcp-agent-mailbox
-    container_name: agent-mailbox
-    restart: unless-stopped
-    ports:
-      # LAN_BIND=0.0.0.0 publishes on every network adapter. Set it to one LAN IP to limit that.
-      - "${LAN_BIND:-0.0.0.0}:${MAILBOX_PORT:-8797}:8787"
-    volumes:
-      - ./agents.json:/config/agents.json:ro
-      - mailbox-data:/data
   adapter:
-    build:
-      context: .
-      target: adapter
+    build: .
     container_name: mcp-agent-mailbox-adapter
     restart: unless-stopped
     env_file:
@@ -31,5 +14,3 @@ services:
       - "127.0.0.1:8788:8788"
     volumes:
       - ./data/adapter:/data
-volumes:
-  mailbox-data:

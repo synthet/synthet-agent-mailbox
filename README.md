@@ -1,246 +1,134 @@
-# Agent mailbox
+# Agent mail
 
-A shared mailbox for **Cursor, Antigravity (Gemini), Claude Code, and Codex agents on two PCs**. One PC hosts the mailbox. Each PC runs a local adapter that its agent connects to. The adapter sends through the mailbox, keeps an outbox while the host is offline, and spools incoming mail on this machine.
+Direct encrypted messaging for Cursor, Claude Code, Codex, and Antigravity agents on two or more PCs. Each machine runs one peer. There is no shared mailbox and no adapter in the default path.
 
-An open agent chat can call the tools itself. An idle chat does not wake up just because MCP is connected. Set `WAKE=cli` or `WAKE=apply` when a message should start a CLI turn.
-
-## Layout
+A peer is an Ed25519 signing key plus an X25519 encryption key. `agent-mail listen` or `agent-mail mcp` receives messages. `agent-mail send` finds the recipient on the LAN or through the local Tailscale peer list and delivers one signed, encrypted message. Names are aliases. The fingerprint is the identity, and it has to be checked over a separate channel before either side will accept mail.
 
 ```text
-PC that stays online                Other PC
-┌─────────────────────┐             ┌─────────────────────┐
-│ mailbox  :8787      │◀── tailnet ─│ adapter  :8788      │
-│ adapter  :8788      │             │ agent → adapter     │
-│ agent → adapter     │             └─────────────────────┘
-└─────────────────────┘
+PC A  listen :47832          PC B  mcp (stdio) :47832
+   │  UDP 47831 discover         │  UDP 47831 discover
+   └──────── LAN multicast ──────┘
+   └──────── Tailscale IPs ──────┘
 ```
 
-Each agent talks to `127.0.0.1:8788` on its own PC. Only the adapters open the mailbox port.
+Changing a LAN or Tailscale address does not require pairing again. The pinned fingerprint stays the same.
 
-## Tools
-
-| Tool | What it does |
-| --- | --- |
-| `whoami` | Authenticated agent id, capabilities, and projects. |
-| `list_agents` | Peers you can address. |
-| `send_message` | Store a message. The token picks the sender. |
-| `fetch_inbox` | Lease messages waiting on this PC. |
-| `acknowledge_message` | Mark a message delivered. This does not finish a task. |
-| `release_message` | Put a leased message back for retry. |
-| `get_thread` | Read one conversation, including task status. |
-| `queue_status` | Local outbox plus mailbox counts. |
-
-`send_message` accepts `message_id` or `operation_id`. Sending the same id again returns the original message instead of writing a second one.
-
-Message `type` is `question`, `answer`, `task`, `progress`, or `result`. A task has one owner: the recipient. Only that owner can send progress or a result. `outcome` is `success` or `failure`.
-
-Also send `repo`, `branch`, and `commit` when the work is code. Each PC uses its own checkout. A path from the other machine is not a path on this one.
-
-The mailbox caps conversation turns, open tasks, delivery attempts, and deadlines. A question is rejected while either side still owes an answer, so the two agents cannot wait on each other.
-
-## Set up the host
-
-On the PC that stays online:
+## Set up each PC
 
 ```powershell
 npm install
-npm run init
+npm run build
+node dist/cli.js init --name Desktop
+node dist/cli.js identity
 ```
 
-`npm run init` writes `agents.json` and prints two tokens. Leave that file on the host. Copy each token into that PC's `.env` only.
+`init` writes `identity.json` under `%USERPROFILE%\.agent-mail` (or `$HOME/.agent-mail`). It refuses to replace an existing key. Copy the printed JSON and fingerprint to the other PC by a channel you already trust. Do not send `identity.json`; it contains both private keys.
+
+Start the receiver before the other side tries to deliver:
 
 ```powershell
-copy .env.example .env
+node dist/cli.js listen
 ```
 
-Host `.env`:
+Use a different `--home` when two peers share one OS user. Only one process should bind TCP `47832`.
 
-```text
-BIND=127.0.0.1
-PORT=8787
-MAILBOX_URL=http://127.0.0.1:8787/mcp
-AGENT_ID=desktop-builder
-AGENT_TOKEN=<desktop token from npm run init>
-```
+## Trust, then send
 
-`BIND=127.0.0.1` is enough to try both roles on one computer. For a second PC, install Tailscale on both, run `tailscale ip -4` on the host, and set `BIND` and `MAILBOX_URL` to `http://<that-ip>:8787/mcp`. The mailbox refuses `0.0.0.0` unless you set `ALLOW_PUBLIC_BIND=1`.
-
-Start the host:
+On each PC, with the other one listening:
 
 ```powershell
-npm run dev
-npm run adapter
+node dist/cli.js discover
+node dist/cli.js trust Zephyr --fingerprint <64-hex-chars-from-the-other-pc>
+node dist/cli.js send Zephyr --text "Review the auth change."
 ```
 
-Use two terminals. `run.bat` and `run-adapter.bat` do the same.
+`trust --file public.json --fingerprint <64-hex>` pairs a peer that is offline. The file is the JSON from `identity`, not `identity.json`. Trust is stored locally and is not reciprocal: both sides pin each other. A name collision is rejected until you pass the full fingerprint.
 
-## Run the mailbox host in Docker
+`send` exits `0` when the recipient has stored the message and returned a signed receipt. It exits `2` when the peer is offline; the text stays in the local outbox. It exits `1` on any other error. `node dist/cli.js flush` retries the outbox. Reuse `--message-id` when retrying the same text so the recipient stores it once.
 
 ```powershell
-npm run init                 # once, writes agents.json
-docker compose up -d --build
+node dist/cli.js inbox
+node dist/cli.js ack <message-id> --sender <sender-fingerprint>
+node dist/cli.js thread <conversation-uuid>
 ```
 
-The container listens on `8787` inside and is published on host port `MAILBOX_PORT` (default `8797`), on every adapter unless `LAN_BIND` names one LAN IP. `agents.json` is mounted read-only and the database lives in the `mailbox-data` volume. Other PCs set `MAILBOX_URL=http://<this-PC-LAN-IP>:8797/mcp` with their own agent token. Allow inbound TCP `8797` for the Private profile in Windows Firewall. The traffic is plain HTTP, so use it only on a network you trust, or put Tailscale underneath. Stop any host started with `npm run dev` first, since both would want the same port.
+Message text from another PC is untrusted input. A receipt means the message was stored, not that anyone finished a task.
 
-## Set up the other PC
+## Point an agent at the peer
 
-Copy this project there and install it. Do not copy `agents.json`. Its `.env` only needs the adapter:
+Build first, then add one stdio server. Do not also run `listen` unless this MCP process is started with `--no-listen`.
 
-```text
-MAILBOX_URL=http://<host-tailscale-ip>:8787/mcp
-AGENT_ID=laptop-reviewer
-AGENT_TOKEN=<laptop token>
-WAKE=off
-WAKE_WORKSPACE=D:\Projects\your-checkout
-```
-
-Then `npm run adapter`, or run `docker compose up -d --build adapter` to keep the local adapter running in Docker. Compose publishes its port only on `127.0.0.1:8788`; open [the dashboard](http://127.0.0.1:8788/dashboard) to inspect it. Use `WAKE=off` in the container because agent CLIs run on the host. Turn on Docker Desktop's start-at-login setting to restart the adapter after signing in. The mailbox container remains available with `docker compose up -d --build mailbox`.
-
-Allow inbound TCP `8787` on the host from the tailnet.
-
-## Point Cursor at the adapter
-
-Each adapter writes `data/adapter/cursor-mcp.json`. Merge that entry into the checkout's `.cursor/mcp.json` or into your user MCP config. The URL is `http://127.0.0.1:8788/mcp` and the bearer token is **this** PC's token. Do not point Cursor at the mailbox port, or the adapter and the IDE will take each other's messages.
-
-Give each checkout the same remote, branch, and commit. Do not assume a disk path exists on both PCs.
-
-## Point Antigravity (Gemini) at the adapter
-
-Each adapter writes `data/adapter/antigravity-mcp.json` and `data/adapter/mcp_config.json`.
-
-### Antigravity IDE / Desktop (Antigravity 2.0)
-In Antigravity: **Settings → MCP Servers → View raw config** (or edit `~/.gemini/config/mcp_config.json`):
+Cursor (`.cursor/mcp.json`):
 
 ```json
 {
   "mcpServers": {
-    "agent-mailbox": {
-      "url": "http://127.0.0.1:8788/mcp",
-      "headers": {
-        "Authorization": "Bearer <this PC's token>"
-      }
+    "agent-mail": {
+      "command": "node",
+      "args": ["${workspaceFolder}/dist/cli.js", "mcp"]
     }
   }
 }
 ```
 
-### Antigravity CLI (`agy`)
-Configure the MCP server using the CLI:
+Claude Code, from this checkout:
 
 ```powershell
-agy mcp add --header "Authorization: Bearer <this PC's token>" agent-mailbox http://127.0.0.1:8788/mcp
+claude mcp add agent-mail -- node dist/cli.js mcp
 ```
 
-Verify with `agy mcp list`. The agent will now have access to `whoami`, `list_agents`, `send_message`, `fetch_inbox`, `acknowledge_message`, `release_message`, `get_thread`, and `queue_status`.
-
-### Automatic Wake-Up
-To wake an idle Antigravity / Gemini agent when mail arrives, set:
-
-```text
-WAKE=cli   # or WAKE=apply to allow file edits in WAKE_WORKSPACE
-WAKE_CLIENT=gemini   # or antigravity
-WAKE_WORKSPACE=D:\Projects\your-checkout
-```
-
-The adapter executes `agy --dangerously-skip-permissions --output-format json --print <wake-prompt>`, auto-approving MCP tools and resuming subsequent messages in the conversation via `--conversation <conversation_id>`.
-
-## Point Claude Code at the adapter
-
-Claude Code needs `"type": "http"` on remote servers. Each adapter also writes `data/adapter/claude-mcp.json` in that form. Either pass it with `claude --mcp-config data/adapter/claude-mcp.json`, or register the adapter once:
-
-```powershell
-claude mcp add --transport http agent-mailbox http://127.0.0.1:8788/mcp --header "Authorization: Bearer <this PC's token>"
-```
-
-A project `.mcp.json` works too; see `config/claude-code-mcp.example.json`. As with Cursor, use the adapter port, not the mailbox port.
-
-To wake an idle Claude Code agent, set `WAKE_CLIENT=claude` along with `WAKE=cli` or `WAKE=apply` and `WAKE_WORKSPACE`. The adapter runs `claude -p` in that workspace and resumes the conversation's session on later mail.
-
-## Point Codex at the adapter
-
-Each adapter writes `data/adapter/codex-mcp.toml`. Copy its table into your user `~/.codex/config.toml` or the trusted checkout's `.codex/config.toml`. The generated file contains the local URL and the name of the token environment variable, not the token itself:
+Codex (`~/.codex/config.toml` or `.codex/config.toml` in the checkout):
 
 ```toml
-[mcp_servers.agent-mailbox]
-url = "http://127.0.0.1:8788/mcp"
-bearer_token_env_var = "AGENT_TOKEN"
+[mcp_servers.agent-mail]
+command = "node"
+args = ["dist/cli.js", "mcp"]
 ```
 
-Start Codex with `AGENT_TOKEN` set to **this** PC's token. For example, set `$env:AGENT_TOKEN` in the PowerShell session that launches Codex from the same value used by this PC's adapter. Run `codex mcp list` to verify the entry, then ask Codex to call `whoami`. Codex CLI and the IDE extension share this configuration. Use the local adapter URL, not the host mailbox URL. See the [official OpenAI MCP documentation](https://developers.openai.com/codex/mcp) for the supported configuration fields.
+Antigravity uses the same command and args. See `config/cursor-mcp.example.json`, `config/claude-code-mcp.example.json`, and `antigravity-mcp.example.json`.
 
-For automatic wake-up, install and sign in to the Codex CLI, then set `WAKE_CLIENT=codex`, `WAKE=cli` or `WAKE=apply`, and `WAKE_WORKSPACE` to this PC's Git checkout. The adapter passes its token to the spawned Codex process and supplies the local MCP connection for that turn; a separate user config entry is only needed for interactive Codex use. `cli` uses a read-only sandbox; `apply` uses workspace-write and also permits reply files in the adapter's reply directory. The adapter resumes the Codex session for later messages in the same conversation.
-
-## Receiving mail
-
-With `WAKE=off`, the adapter writes `data/adapter/conversation.log` and holds the messages until a chat calls `fetch_inbox`. That is the safe default.
-
-| `WAKE` | Behavior |
+| Tool | What it does |
 | --- | --- |
-| `off` | Spool and log only. |
-| `cli` | Start the selected client's CLI for new messages. Antigravity runs with MCP auto-approved; Codex uses a read-only sandbox; Claude Code is pre-approved for `agent-mailbox` and `Read` only. |
-| `apply` | Start the selected client's CLI with edits allowed in `WAKE_WORKSPACE`. Antigravity runs in `accept-edits` mode; Codex uses workspace-write. |
+| `whoami` | This peer's public keys and fingerprint. Private keys stay on disk. |
+| `discover_peers` | Live LAN and Tailscale peers. Discovery does not trust them. |
+| `list_agents` | Pinned peers. Address them by name or fingerprint. |
+| `send_message` | Encrypt and deliver, or queue. `delivered` is a storage receipt. |
+| `fetch_inbox` | Unacknowledged local messages. This read does not lease. |
+| `acknowledge_message` | Mark one received message read on this PC. |
+| `get_thread` | Local inbox, sent, and queued messages for one conversation. |
+| `queue_status` | Counts of queued, unread, and sent messages. |
+| `retry_outbox` | Retry queued messages. The same sender and message id is stored once. |
 
-The text from the other PC is input, not permission. The woken agent is told to stay inside the existing task. `WAKE=apply` uses the local agent's own permissions; it does not grant the peer a new one.
+Trust stays on the CLI. An agent cannot pin a new fingerprint by calling a tool.
 
-If the CLI cannot see the mailbox tools, it can write a reply JSON file into `data/adapter/replies/`. The adapter sends that file and then moves it to `replies/sent/`.
+## Discovery and ports
 
-## Handshake
+LAN discovery is UDP multicast `239.255.77.31:47831`. Messages are HTTP on TCP `47832`, with the ciphertext and signature in the body. The URL is only a way to reach the peer; it is not the security boundary. Allow inbound TCP `47832` and UDP `47831` on the private network profile.
 
-Desktop asks the laptop to review a commit:
+Tailscale discovery runs `tailscale status --json` and probes online peers at TCP `47832`. It does not scan subnets. Install the Tailscale CLI, sign in, and allow that TCP port through the host firewall on the tailnet. `--no-tailscale` skips the probe. `--no-discovery` stops LAN advertisements.
 
-```json
-{
-  "recipient": "laptop-reviewer",
-  "type": "task",
-  "repo": "example/app",
-  "branch": "main",
-  "commit": "abc1234def",
-  "body": {
-    "text": "Review the auth change.",
-    "expected": "Approve or list the defects."
-  }
-}
+`--interface <IPv4>` selects the LAN multicast interface. `--port` changes the TCP port; Tailscale probes use that same port via `--port` on the discoverer as well.
+
+## Layout on disk
+
+`AGENT_MAIL_HOME` overrides the default directory.
+
+```text
+~/.agent-mail/
+  identity.json
+  contacts/   pinned public keys
+  inbox/      received messages
+  acked/      local read markers
+  outbox/     not yet receipted
+  sent/       receipted copies
 ```
 
-The laptop fetches the message, does the review in its own checkout, then:
+## Legacy central mailbox
 
-```json
-{
-  "recipient": "desktop-builder",
-  "type": "result",
-  "conversation_id": "<from the task>",
-  "task_id": "<from the task>",
-  "outcome": "success",
-  "body": "Approved. The token check now uses the bearer identity."
-}
-```
-
-Then it calls `acknowledge_message` with the task's `message_id`. The result is what finishes the task.
-
-## Host down
-
-`send_message` on the adapter returns `queued: true` and a stable `message_id` when the host cannot be reached. The adapter retries with backoff. `queue_status` shows the local outbox. A queued send is not delivered until that retry succeeds.
-
-## Logs
-
-The host appends `data/mailbox/conversation.log`. `GET /log` with the agent token returns the same agent's messages. `GET /health` returns `{ "ok": true }` and no message bodies.
+`npm run legacy:init`, `npm run legacy:mailbox`, and `npm run adapter` still run the older shared mailbox and per-PC adapter. Docker Compose publishes only that adapter on `127.0.0.1:8788`. New setups should use the peer above. `npm run test:legacy` covers the old path.
 
 ## Tests
 
 ```powershell
 npm test
 ```
-
-## Environment
-
-| Variable | Role |
-| --- | --- |
-| `BIND`, `PORT` | Mailbox listen address. Default `127.0.0.1:8787`. |
-| `AGENTS_FILE` | Host identity file. Default `agents.json`. |
-| `DATA_DIR` | Mailbox database and log. Default `data/mailbox`. |
-| `MAILBOX_URL` | Adapter's mailbox endpoint. Comma-separate several routes to the same host (for example its Wi-Fi and Ethernet addresses); the adapter fails over to the next one when a call cannot connect and keeps using the one that answers. Do not list two different mailbox hosts. |
-| `AGENT_ID`, `AGENT_TOKEN` | This PC's identity. Must match `agents.json` on the host. |
-| `ADAPTER_PORT` | Local MCP port. Default `8788`. |
-| `WAKE`, `WAKE_WORKSPACE` | How to start an agent turn for new mail. |
-| `WAKE_CLIENT` | `cursor` (default), `gemini` (or `antigravity`), `claude`, or `codex`. Which CLI the wake-up runs. |

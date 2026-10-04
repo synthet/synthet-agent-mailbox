@@ -20,7 +20,7 @@ if (isDirectRun(import.meta.url)) {
     .then((adapter) => {
       console.error(`adapter for ${options.agentId}`);
       console.error(`local MCP ${adapter.url}`);
-      console.error(`mailbox ${[options.mailboxUrl].flat().join(", ")}`);
+      console.error(`mailbox ${options.mailboxUrl}`);
       console.error(`wake ${options.wake} (${options.wakeClient ?? "cursor"})`);
       console.error(`conversation log ${adapter.logPath}`);
       if (options.wakeClient === "gemini" || options.wakeClient === "antigravity") {

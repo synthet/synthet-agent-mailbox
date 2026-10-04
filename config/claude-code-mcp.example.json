@@ -1,11 +1,8 @@
 {
   "mcpServers": {
-    "agent-mailbox": {
-      "type": "http",
-      "url": "http://127.0.0.1:8788/mcp",
-      "headers": {
-        "Authorization": "Bearer PASTE_THIS_PCS_AGENT_TOKEN"
-      }
+    "agent-mail": {
+      "command": "node",
+      "args": ["dist/cli.js", "mcp"]
     }
   }
 }

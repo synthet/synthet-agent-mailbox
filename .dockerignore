@@ -3,9 +3,6 @@ dist
 data
 .env
 .git
-agents.json
-*.db
-*.db-shm
-*.db-wal
 *.log
-codex-session-*.md
+test
+docs

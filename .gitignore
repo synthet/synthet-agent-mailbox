@@ -11,3 +11,4 @@ mailbox.db-shm
 # Agent session transcripts
 codex-session-*.md
 20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.md
+.agent-mail/

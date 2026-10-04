@@ -1,20 +1,26 @@
 {
   "name": "mcp-agent-mailbox",
-  "version": "0.2.0",
-  "description": "Shared MCP mailbox and per-PC adapter for Cursor, Antigravity (Gemini), Claude Code, and Codex agents",
+  "version": "0.3.0",
+  "description": "Direct encrypted peer messaging with LAN discovery, a standalone CLI, and stdio MCP",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/cli.js",
+  "bin": { "agent-mail": "dist/cli.js" },
   "scripts": {
-    "init": "tsx src/init.ts",
+    "init": "node dist/cli.js init",
     "build": "tsc",
-    "dev": "tsx src/index.ts",
-    "start": "node dist/index.js",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "peer": "node dist/cli.js",
+    "mcp": "node dist/cli.js mcp",
+    "legacy:init": "tsx src/init.ts",
+    "legacy:mailbox": "node dist/index.js",
     "adapter": "tsx src/adapter-main.ts",
     "start:adapter": "node dist/adapter-main.js",
-    "test": "node --import tsx --test test/protocol.test.ts test/wake.test.ts test/integration.test.ts"
+    "test": "npm run build && node --test test/peer.test.mjs",
+    "test:legacy": "node --import tsx --test test/protocol.test.ts test/wake.test.ts test/integration.test.ts"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

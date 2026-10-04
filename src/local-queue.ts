@@ -261,40 +261,6 @@ export class LocalQueue {
     return messages;
   }
 
-  /** Newest spooled messages with their local handling status, for the dashboard. */
-  recent(limit: number): Array<{ status: string; wake_attempts: number; message: Envelope }> {
-    const rows = this.db
-      .prepare(`SELECT message_json, status, wake_attempts FROM spool ORDER BY created_at DESC LIMIT ?`)
-      .all(limit) as Array<{ message_json: string; status: string; wake_attempts: number }>;
-    return rows.map((row) => ({
-      status: row.status,
-      wake_attempts: row.wake_attempts,
-      message: JSON.parse(row.message_json) as Envelope,
-    }));
-  }
-
-  /** Outbox rows that have not been delivered yet, for the dashboard. */
-  outboxRows(limit: number): Array<{ message_id: string; recipient: string; type: string; status: string; attempts: number; last_error: string | null; created_at: string }> {
-    const rows = this.db
-      .prepare(
-        `SELECT message_id, payload, status, attempts, last_error, created_at FROM outbox
-         WHERE status IN ('pending', 'rejected') ORDER BY created_at DESC LIMIT ?`,
-      )
-      .all(limit) as Array<{ message_id: string; payload: string; status: string; attempts: number; last_error: string | null; created_at: number }>;
-    return rows.map((row) => {
-      const payload = JSON.parse(row.payload) as SendInput;
-      return {
-        message_id: row.message_id,
-        recipient: payload.recipient,
-        type: payload.type,
-        status: row.status,
-        attempts: row.attempts,
-        last_error: row.last_error,
-        created_at: new Date(row.created_at).toISOString(),
-      };
-    });
-  }
-
   counts(): SpoolCounts {
     const count = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
     return {
