@@ -92,6 +92,7 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
   let stopped: Error | null = null;
   let polling = false;
   let waking = false;
+  let actualPort = options.port;
 
   function note(line: string): void {
     try {
@@ -303,22 +304,63 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
   const app = express();
   app.disable("x-powered-by");
   app.get("/", (_req, res) => res.redirect("/dashboard"));
-  app.get("/dashboard", (_req, res) => {
-    res.set("Cache-Control", "no-store").type("html").send(dashboardHtml);
-  });
-  app.get("/dashboard/data", (req, res) => {
-    res.set("Cache-Control", "no-store");
-    if (!authorized(req, options.token)) {
-      res.status(401).json({ error: "Unauthorized" });
+  // Read-only local dashboard. No token: the Host header must be loopback so a hostile page cannot read it through DNS rebinding.
+  function loopbackHost(req: Request): boolean {
+    const host = (req.header("host") ?? "").toLowerCase();
+    return host === `127.0.0.1:${actualPort}` || host === `localhost:${actualPort}` || host === `[::1]:${actualPort}`;
+  }
+  app.get("/dashboard", (req, res) => {
+    if (!loopbackHost(req)) {
+      res.status(403).type("text/plain").send("Forbidden host");
       return;
     }
+    res
+      .set("Cache-Control", "no-store")
+      .set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
+      .set("X-Content-Type-Options", "nosniff")
+      .type("html")
+      .send(dashboardHtml);
+  });
+  app.get("/api/dashboard", async (req, res) => {
+    if (!loopbackHost(req)) {
+      res.status(403).json({ error: "Forbidden host" });
+      return;
+    }
+    const attempt = async <T,>(call: () => Promise<T>): Promise<{ value: T | null; error: string | null }> => {
+      try {
+        return { value: await call(), error: null };
+      } catch (error) {
+        return { value: null, error: error instanceof Error ? error.message : String(error) };
+      }
+    };
+    const [agents, remoteStatus] = identityOk
+      ? await Promise.all([attempt(() => remote.call("list_agents")), attempt(() => remote.call("queue_status"))])
+      : [{ value: null, error: "mailbox unreachable" }, { value: null, error: "mailbox unreachable" }];
     let log = "";
     try {
-      log = readFileSync(logPath, "utf8");
+      log = readFileSync(logPath, "utf8").slice(-6000);
     } catch {
-      // The log is created when the first message arrives.
+      log = "";
     }
-    res.json({ local: queue.counts(), log, error: stopped?.message ?? null });
+    res.set("Cache-Control", "no-store").json({
+      generated_at: new Date().toISOString(),
+      agent: profile,
+      mailbox: {
+        url: options.mailboxUrl,
+        candidates: [options.mailboxUrl],
+        connected: identityOk,
+        fatal: stopped ? stopped.message : null,
+      },
+      wake: { mode: options.wake, client: options.wakeClient ?? "cursor" },
+      agents: agents.value,
+      agents_error: agents.error,
+      remote: remoteStatus.value,
+      remote_error: remoteStatus.error,
+      local: queue.counts(),
+      outbox: queue.outboxRows(20),
+      recent: queue.recent(25),
+      log,
+    });
   });
   app.get("/health", (_req, res) => {
     res.json({ ok: true, service: "adapter", agent_id: options.agentId, mailbox: identityOk ? "connected" : "unreachable" });
@@ -496,6 +538,7 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
   await listen(server, options.port, options.bind);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("adapter did not bind a TCP port");
+  actualPort = address.port;
   const url = `http://127.0.0.1:${address.port}/mcp`;
   writeFileSync(
     join(options.dataDir, "cursor-mcp.json"),

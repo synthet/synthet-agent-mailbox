@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -82,16 +82,11 @@ test("adapter delivers mail to the other PC and queues while the host is down", 
     assert.equal(dashboard.status, 200);
     assert.match(dashboard.headers.get("content-type") ?? "", /text\/html/);
     const dashboardHtml = await dashboard.text();
-    assert.match(dashboardHtml, /Agent mailbox/);
+    assert.match(dashboardHtml, /Mailbox dashboard/);
+    assert.doesNotMatch(dashboardHtml, /agent token/i);
     assert(!dashboardHtml.includes(LAPTOP_TOKEN));
     const root = await fetch(baseUrl, { redirect: "manual" });
     assert.equal(root.headers.get("location"), "/dashboard");
-    const privateDenied = await fetch(`${baseUrl}/dashboard/data`);
-    assert.equal(privateDenied.status, 401);
-    const wrongToken = await fetch(`${baseUrl}/dashboard/data`, {
-      headers: { Authorization: `Bearer ${DESKTOP_TOKEN}` },
-    });
-    assert.equal(wrongToken.status, 401);
 
     const queued = await laptop.call<{ queued: boolean; message_id: string }>("send_message", {
       recipient: "desktop-builder",
@@ -99,15 +94,23 @@ test("adapter delivers mail to the other PC and queues while the host is down", 
       body: "Are you there?",
     });
     assert.equal(queued.queued, true);
-    const dashboardData = await fetch(`${baseUrl}/dashboard/data`, {
-      headers: { Authorization: `Bearer ${LAPTOP_TOKEN}` },
-    });
+    const dashboardData = await fetch(`${baseUrl}/api/dashboard`);
     assert.equal(dashboardData.status, 200);
     assert.equal(dashboardData.headers.get("cache-control"), "no-store");
-    const snapshot = await dashboardData.json() as { local: { outbox: number }; log: string };
+    const snapshot = await dashboardData.json() as { local: { outbox: number }; log: string; outbox: unknown[] };
     assert.equal(snapshot.local.outbox, 1);
+    assert.equal(snapshot.outbox.length, 1);
     assert.match(snapshot.log, /queued/);
     assert(!JSON.stringify(snapshot).includes(LAPTOP_TOKEN));
+    const rebound = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(`${baseUrl}/api/dashboard`, { headers: { host: "evil.example" } }, (response) => {
+        response.resume();
+        resolve(response.statusCode ?? 0);
+      });
+      request.on("error", reject);
+      request.end();
+    });
+    assert.equal(rebound, 403);
 
     mailbox = await startMailbox({
       port,

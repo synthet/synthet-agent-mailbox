@@ -1,8 +1,11 @@
 {
   "mcpServers": {
-    "agent-mail": {
-      "command": "node",
-      "args": ["${workspaceFolder}/dist/cli.js", "mcp", "--harness", "cursor", "--agent-name", "cursor"]
+    "agent-mailbox": {
+      "type": "http",
+      "url": "http://127.0.0.1:8788/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:AGENT_TOKEN}"
+      }
     }
   }
 }
