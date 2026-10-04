@@ -381,7 +381,8 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
       res.status(403).json({ error: "Forbidden origin" });
       return;
     }
-    if (!authorized(req, options.token)) {
+    // Cursor's HTTP client sends no static bearer. Loopback is the same trust boundary as the dashboard.
+    if (!authorized(req, options.token) && !loopbackHost(req)) {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
