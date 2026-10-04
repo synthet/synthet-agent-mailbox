@@ -13,6 +13,7 @@ import { RemoteMailbox } from "./remote.js";
 import { bodySchema, fetchShape, messageIdShape, sendShape, threadShape } from "./schemas.js";
 import { handleMcp } from "./server.js";
 import { dashboardHtml } from "./dashboard.js";
+import { faviconIco, faviconSvg } from "./favicon.js";
 import type { Agent, Envelope, SendInput } from "./types.js";
 import { MESSAGE_TYPES } from "./types.js";
 import { parseWakeClient, parseWakeMode, wakeAgent, type WakeClient, type WakeMode } from "./wake.js";
@@ -304,6 +305,12 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
   const app = express();
   app.disable("x-powered-by");
   app.get("/", (_req, res) => res.redirect("/dashboard"));
+  app.get("/favicon.svg", (_req, res) => {
+    res.set("Cache-Control", "public, max-age=86400").type("image/svg+xml").send(faviconSvg);
+  });
+  app.get("/favicon.ico", (_req, res) => {
+    res.set("Cache-Control", "public, max-age=86400").type("image/x-icon").send(faviconIco());
+  });
   // Read-only local dashboard. No token: the Host header must be loopback so a hostile page cannot read it through DNS rebinding.
   function loopbackHost(req: Request): boolean {
     const host = (req.header("host") ?? "").toLowerCase();
@@ -316,7 +323,7 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
     }
     res
       .set("Cache-Control", "no-store")
-      .set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
+      .set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
       .set("X-Content-Type-Options", "nosniff")
       .type("html")
       .send(dashboardHtml);

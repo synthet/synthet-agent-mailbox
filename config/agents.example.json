@@ -4,14 +4,14 @@
   "maxAttempts": 5,
   "agents": [
     {
-      "id": "desktop-builder",
-      "token": "replace-me-desktop-builder",
+      "id": "zephyr",
+      "token": "replace-me-zephyr",
       "capabilities": [],
       "projects": ["*"]
     },
     {
-      "id": "laptop-reviewer",
-      "token": "replace-me-laptop-reviewer",
+      "id": "tridentx",
+      "token": "replace-me-tridentx",
       "capabilities": [],
       "projects": ["*"]
     }
