@@ -6,13 +6,13 @@
     {
       "id": "desktop-builder",
       "token": "replace-me-desktop-builder",
-      "capabilities": ["build", "edit", "test"],
+      "capabilities": [],
       "projects": ["*"]
     },
     {
       "id": "laptop-reviewer",
       "token": "replace-me-laptop-reviewer",
-      "capabilities": ["review", "read"],
+      "capabilities": [],
       "projects": ["*"]
     }
   ]

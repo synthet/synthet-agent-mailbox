@@ -147,7 +147,6 @@ export const dashboardHtml = `<!doctype html>
       var li = el('li');
       li.appendChild(el('b', a.id));
       if (a.id === d.agent.id) li.appendChild(el('span', ' this PC', 'pill'));
-      li.appendChild(el('span', '  ' + (a.capabilities || []).join(', ') + '  |  projects: ' + (a.projects || []).join(', '), 'meta'));
       agents.appendChild(li);
     });
 

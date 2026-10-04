@@ -19,13 +19,13 @@ const config = {
     {
       id: "desktop-builder",
       token: desktop,
-      capabilities: ["build", "edit", "test"],
+      capabilities: [],
       projects: ["*"],
     },
     {
       id: "laptop-reviewer",
       token: laptop,
-      capabilities: ["review", "read"],
+      capabilities: [],
       projects: ["*"],
     },
   ],
