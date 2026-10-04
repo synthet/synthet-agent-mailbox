@@ -2,7 +2,7 @@
   "mcpServers": {
     "agent-mail": {
       "command": "node",
-      "args": ["${workspaceFolder}/dist/cli.js", "mcp"]
+      "args": ["${workspaceFolder}/dist/cli.js", "mcp", "--harness", "cursor", "--agent-name", "cursor"]
     }
   }
 }

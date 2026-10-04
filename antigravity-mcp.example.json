@@ -2,7 +2,7 @@
   "mcpServers": {
     "agent-mail": {
       "command": "node",
-      "args": ["dist/cli.js", "mcp"]
+      "args": ["dist/cli.js", "mcp", "--harness", "antigravity", "--agent-name", "antigravity", "--model", "gemini"]
     }
   }
 }

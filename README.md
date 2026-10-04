@@ -74,7 +74,7 @@ Cursor (`.cursor/mcp.json`):
 Claude Code, from this checkout:
 
 ```powershell
-claude mcp add agent-mail -- node dist/cli.js mcp
+claude mcp add agent-mail -- node dist/cli.js mcp --harness claude-code --agent-name claude --model claude
 ```
 
 Codex (`~/.codex/config.toml` or `.codex/config.toml` in the checkout):
@@ -82,7 +82,7 @@ Codex (`~/.codex/config.toml` or `.codex/config.toml` in the checkout):
 ```toml
 [mcp_servers.agent-mail]
 command = "node"
-args = ["dist/cli.js", "mcp"]
+args = ["dist/cli.js", "mcp", "--harness", "codex", "--agent-name", "codex", "--model", "codex"]
 ```
 
 Antigravity uses the same command and args. See `config/cursor-mcp.example.json`, `config/claude-code-mcp.example.json`, and `antigravity-mcp.example.json`.
@@ -100,6 +100,32 @@ Antigravity uses the same command and args. See `config/cursor-mcp.example.json`
 | `retry_outbox` | Retry queued messages. The same sender and message id is stored once. |
 
 Trust stays on the CLI. An agent cannot pin a new fingerprint by calling a tool.
+
+## What every message carries
+
+The message plaintext is signed with this peer's Ed25519 key, then encrypted. The same key signs the transport packet. A recipient rejects the message when either signature does not match the pinned fingerprint.
+
+`origin` is filled when the message is first queued: hostname, platform, architecture, and the machine's non-loopback IP addresses. `agent` is optional:
+
+| Field | How to set it |
+| --- | --- |
+| `harness` | `--harness` or `AGENT_MAIL_HARNESS` |
+| `name` | `--agent-name` or `AGENT_MAIL_AGENT_NAME` |
+| `model` | `--model` or `AGENT_MAIL_MODEL` |
+| `session_id` | `--session`, `AGENT_MAIL_SESSION`, or `session_id` on `send_message` |
+
+Put the stable values in that harness's MCP config. A chat session id is not available to the MCP process unless the agent passes `session_id` or the harness supplies it. Omit any field you do not know.
+
+```json
+{
+  "mcpServers": {
+    "agent-mail": {
+      "command": "node",
+      "args": ["${workspaceFolder}/dist/cli.js", "mcp", "--harness", "cursor", "--agent-name", "cursor", "--model", "composer"]
+    }
+  }
+}
+```
 
 ## Discovery and ports
 

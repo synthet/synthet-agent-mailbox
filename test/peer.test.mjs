@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
@@ -13,7 +13,7 @@ import { advertisement, advertise, discover, parseAdvert, probeIdentity, tailsca
 import { Peer } from "../dist/peer/peer.js";
 import { PeerStore } from "../dist/peer/store.js";
 import { createPeerMcp } from "../dist/peer/mcp.js";
-import { seal, unseal, receipt, verifyReceipt } from "../dist/peer/wire.js";
+import { seal, unseal, receipt, verifyReceipt, signMessage, verifyMessage } from "../dist/peer/wire.js";
 
 function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), "agent-mail-test-"));
@@ -23,7 +23,11 @@ function setup(t) {
   return { dir, a, b };
 }
 function message(a, b, text = "private message") {
-  return { id: randomUUID(), conversation_id: randomUUID(), sender: fingerprint(a), recipient: fingerprint(b), text, created_at: Date.now() };
+  return signMessage(a, {
+    id: randomUUID(), conversation_id: randomUUID(), sender: fingerprint(a), recipient: fingerprint(b), text, created_at: Date.now(),
+    origin: { hostname: "desktop", platform: "test", arch: "x64", addresses: ["192.0.2.10"] },
+    agent: { harness: "test", name: "Desktop", model: "fixture", session_id: "session-1" },
+  });
 }
 function pair(a, b, options = {}) {
   a.store.trust(publicIdentity(b.identity), fingerprint(b.identity), options.b);
@@ -52,6 +56,10 @@ test("encrypted wire authenticates both identities, rejects tampering and expiry
   const packet = seal(a, b, m);
   const trust = (id) => id === fingerprint(a) ? publicIdentity(a) : undefined;
   assert.ok(!JSON.stringify(packet).includes(m.text));
+  assert.equal(verifyMessage(a, m), true);
+  assert.equal(verifyMessage(b, m), false);
+  assert.throws(() => seal(a, b, { ...m, text: "changed" }), /signature/);
+  assert.throws(() => seal(a, b, { ...m, origin: { ...m.origin, hostname: "impostor" } }), /signature/);
   assert.deepEqual(unseal(b, packet, trust), m);
   assert.throws(() => unseal(b, packet, () => undefined), /Untrusted/);
   assert.throws(() => unseal(a, packet, trust), /recipient/);
@@ -84,12 +92,16 @@ test("direct delivery, restart-safe inbox, idempotency, signed discovery probe, 
   assert.equal(bob.inbox().length, 1);
   await assert.rejects(() => alice.send({ recipient: "Zephyr", text: "changed", message_id: id }), /different/);
   const received = bob.inbox()[0];
+  assert.equal(received.origin.hostname, hostname());
+  assert.equal(verifyMessage(a, received), true);
+  assert.equal(received.agent, undefined);
   // Simulate lost receipt: the recipient accepts an identical encrypted retry only once.
   const retry = await fetch(`http://127.0.0.1:${listener.port}/message`, { method: "POST", body: JSON.stringify(seal(a, b, received)) });
   assert.equal(retry.status, 200);
   await retry.text();
   assert.equal(bob.inbox().length, 1);
-  const conflict = await fetch(`http://127.0.0.1:${listener.port}/message`, { method: "POST", body: JSON.stringify(seal(a, b, { ...received, text: "conflict" })) });
+  const { signature: ignored, ...unsigned } = received;
+  const conflict = await fetch(`http://127.0.0.1:${listener.port}/message`, { method: "POST", body: JSON.stringify(seal(a, b, signMessage(a, { ...unsigned, text: "conflict" }))) });
   assert.equal(conflict.status, 409);
   await conflict.text();
   const restarted = new Peer(loadIdentity(join(dir, "b")), join(dir, "b"));
@@ -140,7 +152,7 @@ test("Tailscale candidates include online IPv4/IPv6 peers only and never shell t
 
 test("MCP exposes the peer contract and delivers using the same transport", async (t) => {
   const { dir, a, b } = setup(t);
-  const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
+  const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false }, { harness: "cursor", name: "cursor", model: "composer" });
   const bob = new Peer(b, join(dir, "b"));
   const listener = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false });
   const server = createPeerMcp(alice);
@@ -153,9 +165,13 @@ test("MCP exposes the peer contract and delivers using the same transport", asyn
   const tools = await client.listTools();
   assert.ok(tools.tools.some((t) => t.name === "discover_peers"));
   assert.ok(!tools.tools.some((t) => t.name === "trust_peer"));
-  const result = await client.callTool({ name: "send_message", arguments: { recipient: "Zephyr", text: "via MCP" } });
+  const result = await client.callTool({ name: "send_message", arguments: { recipient: "Zephyr", text: "via MCP", session_id: "sess-1" } });
   assert.equal(JSON.parse(result.content[0].text).status, "delivered");
   assert.equal(bob.inbox()[0].text, "via MCP");
+  assert.equal(bob.inbox()[0].agent.harness, "cursor");
+  assert.equal(bob.inbox()[0].agent.model, "composer");
+  assert.equal(bob.inbox()[0].agent.session_id, "sess-1");
+  assert.equal(verifyMessage(a, bob.inbox()[0]), true);
   const who = await client.callTool({ name: "whoami", arguments: {} });
   assert.ok(!JSON.stringify(who).includes("PRIVATE KEY"));
 });
@@ -164,10 +180,13 @@ test("CLI exports no private keys, rejects malformed commands, and stdio MCP sta
   const { dir } = setup(t);
   const cli = join(process.cwd(), "dist", "cli.js");
   const run = (...args) => spawnSync(process.execPath, [cli, "--home", join(dir, "a"), ...args], { encoding: "utf8", timeout: 10_000, windowsHide: true });
-  const identity = run("identity");
+  const identity = run("identity", "--harness", "cursor", "--agent-name", "cursor", "--model", "composer", "--session", "sess-1");
   assert.equal(identity.status, 0, identity.stderr);
   assert.ok(!identity.stdout.includes("PRIVATE KEY"));
-  assert.equal(JSON.parse(identity.stdout).name, "Desktop");
+  const exported = JSON.parse(identity.stdout);
+  assert.equal(exported.name, "Desktop");
+  assert.equal(exported.origin.hostname, hostname());
+  assert.deepEqual(exported.agent, { harness: "cursor", name: "cursor", model: "composer", session_id: "sess-1" });
   assert.equal(run("send", "Zephyr", "--text", "a", "--file", "b").status, 1);
   const client = new Client({ name: "stdio-test", version: "1" });
   const transport = new StdioClientTransport({ command: process.execPath, args: [cli, "--home", join(dir, "a"), "mcp", "--no-listen", "--no-tailscale"], stderr: "pipe" });

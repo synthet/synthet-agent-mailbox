@@ -1,16 +1,52 @@
 import { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { fingerprint, publicIdentity, publicIdentitySchema, signed, verified, type Identity, type PublicIdentity } from "./identity.js";
+import { agentSchema, originSchema } from "./metadata.js";
 
-export const messageSchema = z.object({
+const unsignedSchema = z.object({
   id: z.string().uuid(),
   conversation_id: z.string().uuid(),
   sender: z.string().regex(/^[a-f0-9]{64}$/),
   recipient: z.string().regex(/^[a-f0-9]{64}$/),
   text: z.string().min(1).max(64 * 1024).refine((text) => Buffer.byteLength(text, "utf8") <= 64 * 1024, "Text exceeds 64 KiB"),
   created_at: z.number().int().nonnegative(),
+  origin: originSchema,
+  agent: agentSchema.optional(),
+}).strict();
+export const messageSchema = unsignedSchema.extend({
+  signature: z.string().min(1).max(128),
 }).strict().refine((message) => Buffer.byteLength(JSON.stringify(message), "utf8") <= 96 * 1024, "Encoded message exceeds 96 KiB");
 export type PeerMessage = z.infer<typeof messageSchema>;
+type UnsignedMessage = z.infer<typeof unsignedSchema>;
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, entry]) => [key, canonicalize(entry)]));
+  }
+  return value;
+}
+
+/** Stable bytes covered by the sender's Ed25519 key. The signature field itself is excluded. */
+export function canonicalUnsigned(message: UnsignedMessage): string {
+  return JSON.stringify(canonicalize(unsignedSchema.parse(message)));
+}
+
+export function signMessage(identity: Identity, input: unknown): PeerMessage {
+  const unsigned = unsignedSchema.parse(input);
+  const message = messageSchema.parse({ ...unsigned, signature: signed(identity, canonicalUnsigned(unsigned)) });
+  if (!verifyMessage(identity, message)) throw new Error("Invalid message signature");
+  return message;
+}
+
+export function verifyMessage(identity: PublicIdentity, message: PeerMessage): boolean {
+  const parsed = messageSchema.parse(message);
+  const { signature, ...unsigned } = parsed;
+  return verified(identity, canonicalUnsigned(unsigned), signature);
+}
 const packetSchema = z.object({ payload: z.string().max(200_000), signature: z.string().max(128) }).strict();
 export type Packet = z.infer<typeof packetSchema>;
 const encryptedSchema = z.object({
@@ -25,7 +61,8 @@ function key(privateKey: string, publicKey: string, recipient: string): Buffer {
 }
 
 export function seal(identity: Identity, recipient: PublicIdentity, message: PeerMessage): Packet {
-  messageSchema.parse(message);
+  message = messageSchema.parse(message);
+  if (!verifyMessage(identity, message)) throw new Error("Invalid message signature");
   const ephemeral = generateKeyPairSync("x25519");
   const privateKey = ephemeral.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   const iv = randomBytes(12);
@@ -50,6 +87,7 @@ export function unseal(identity: Identity, input: unknown, trusted: (id: string)
   decipher.setAuthTag(Buffer.from(wire.tag, "base64"));
   const message = messageSchema.parse(JSON.parse(Buffer.concat([decipher.update(Buffer.from(wire.ciphertext, "base64")), decipher.final()]).toString("utf8")));
   if (message.sender !== sender || message.recipient !== wire.recipient) throw new Error("Message identity mismatch");
+  if (!verifyMessage(contact, message)) throw new Error("Invalid message signature");
   return message;
 }
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { fingerprint, initIdentity, loadIdentity, publicIdentity, validatePublic } from "./peer/identity.js";
+import { agentProfile } from "./peer/metadata.js";
 import { startPeerMcp } from "./peer/mcp.js";
 import { Peer } from "./peer/peer.js";
 import type { Contact } from "./peer/store.js";
@@ -21,6 +22,7 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
   send RECIPIENT --text TEXT             Send directly; auto-discover address
   send RECIPIENT --file PATH             Read exact UTF-8 text (use - for stdin)
        [--message-id UUID] [--conversation UUID]
+       [--harness NAME] [--agent-name NAME] [--model NAME] [--session ID]
   inbox                                 Read unacknowledged messages
   ack MESSAGE_ID --sender FINGERPRINT    Mark received message read
   thread CONVERSATION_UUID               Read local conversation history
@@ -32,7 +34,11 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
 Options: --home PATH (or AGENT_MAIL_HOME), --port 47832, --bind 0.0.0.0,
   --interface IPv4 (LAN multicast interface), --timeout 1200 (discovery ms),
   --no-discovery (disable LAN advertisements), --no-tailscale,
-  --no-listen (MCP with an existing receiver).
+  --no-listen (MCP with an existing receiver),
+  --harness, --agent-name, --model, --session (or AGENT_MAIL_HARNESS,
+  AGENT_MAIL_AGENT_NAME, AGENT_MAIL_MODEL, AGENT_MAIL_SESSION).
+Each message records hostname and IPs, and is signed by this peer's Ed25519 key.
+Agent fields are optional. Set the stable ones in the MCP config; pass session when known.
 Pair both directions. Verify fingerprints through a separate trusted channel.
 Names alone never establish trust. Queued messages need flush/retry_outbox.
 Send exit codes: 0 = recipient stored message; 2 = queued; 1 = error.
@@ -42,6 +48,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
     home: { type: "string" }, name: { type: "string" }, fingerprint: { type: "string" }, endpoint: { type: "string" },
     file: { type: "string" }, text: { type: "string" }, "message-id": { type: "string" }, conversation: { type: "string" }, sender: { type: "string" },
+    harness: { type: "string" }, "agent-name": { type: "string" }, model: { type: "string" }, session: { type: "string" },
     port: { type: "string" }, bind: { type: "string" }, interface: { type: "string" }, timeout: { type: "string" },
     "no-discovery": { type: "boolean" }, "no-listen": { type: "boolean" }, "no-tailscale": { type: "boolean" }, help: { type: "boolean", short: "h" },
   } });
@@ -55,7 +62,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     output({ ...publicIdentity(identity), fingerprint: fingerprint(identity) });
     return;
   }
-  const peer = new Peer(loadIdentity(home), home, { interface: values.interface, timeoutMs: values.timeout ? Number(values.timeout) : undefined, tailscale: !values["no-tailscale"], peerPort: values.port ? Number(values.port) : undefined });
+  const agent = agentProfile({
+    harness: values.harness ?? process.env.AGENT_MAIL_HARNESS,
+    name: values["agent-name"] ?? process.env.AGENT_MAIL_AGENT_NAME,
+    model: values.model ?? process.env.AGENT_MAIL_MODEL,
+    session_id: values.session ?? process.env.AGENT_MAIL_SESSION,
+  }) ?? {};
+  const peer = new Peer(loadIdentity(home), home, { interface: values.interface, timeoutMs: values.timeout ? Number(values.timeout) : undefined, tailscale: !values["no-tailscale"], peerPort: values.port ? Number(values.port) : undefined }, agent);
   switch (command) {
     case "identity": output(peer.whoami()); break;
     case "discover": output(await peer.discover()); break;

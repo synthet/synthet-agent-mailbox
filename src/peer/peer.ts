@@ -4,14 +4,19 @@ import { networkInterfaces } from "node:os";
 import { z } from "zod";
 import { advertisement, advertise, discover, discoverTailscale, type DiscoveryOptions } from "./discovery.js";
 import { fingerprint, publicIdentity, type Identity } from "./identity.js";
+import { agentProfile, localOrigin, type AgentDefaults, type AgentMeta } from "./metadata.js";
 import { PeerStore, validateEndpoint, type Contact } from "./store.js";
-import { messageSchema, receipt, seal, unseal, verifyReceipt, type PeerMessage } from "./wire.js";
+import { messageSchema, receipt, seal, signMessage, unseal, verifyReceipt, type PeerMessage } from "./wire.js";
 
 export const peerSendShape = {
   recipient: z.string().min(1).describe("Trusted name or full public-key fingerprint"),
   text: z.string().min(1).max(64 * 1024),
   message_id: z.string().uuid().optional().describe("Reuse on retry to avoid duplicate delivery"),
   conversation_id: z.string().uuid().optional(),
+  harness: z.string().min(1).max(80).optional().describe("Override the harness name configured on this MCP server."),
+  agent_name: z.string().min(1).max(120).optional().describe("Override the agent name configured on this MCP server."),
+  model: z.string().min(1).max(120).optional().describe("Override the model name configured on this MCP server."),
+  session_id: z.string().min(1).max(200).optional().describe("Chat or agent session id, when this harness knows it."),
 };
 export type SendOptions = z.infer<z.ZodObject<typeof peerSendShape>>;
 
@@ -34,8 +39,10 @@ function preferLocalLoopback(endpoints: string[]): string[] {
 
 export class Peer {
   readonly store: PeerStore;
-  constructor(readonly identity: Identity, dir: string, readonly discoveryOptions: DiscoveryOptions = {}) { this.store = new PeerStore(dir); }
-  whoami() { return { ...publicIdentity(this.identity), fingerprint: fingerprint(this.identity) }; }
+  constructor(readonly identity: Identity, dir: string, readonly discoveryOptions: DiscoveryOptions = {}, readonly agent: AgentDefaults = {}) { this.store = new PeerStore(dir); }
+  whoami() {
+    return { ...publicIdentity(this.identity), fingerprint: fingerprint(this.identity), origin: localOrigin(), agent: agentProfile(this.agent) ?? null };
+  }
   async discover() {
     const results = await Promise.allSettled([discover(this.discoveryOptions), discoverTailscale(this.discoveryOptions)]);
     const peers = new Map<string, Awaited<ReturnType<typeof discover>>[number]>();
@@ -50,17 +57,36 @@ export class Peer {
     const contact = this.store.contact(args.recipient);
     const id = args.message_id ?? randomUUID();
     const existing = this.store.get<PeerMessage>("sent", id) ?? this.store.get<PeerMessage>("outbox", id);
-    if (existing && (existing.text !== args.text || existing.recipient !== fingerprint(contact.identity) || (args.conversation_id && existing.conversation_id !== args.conversation_id))) throw new Error("Message id already used with different content");
-    let message: PeerMessage = existing ?? {
+    if (existing && this.conflicts(existing, args, fingerprint(contact.identity))) throw new Error("Message id already used with different content");
+    const agent = this.profileFor(args);
+    const created = existing ?? signMessage(this.identity, {
       id, conversation_id: args.conversation_id ?? randomUUID(), sender: fingerprint(this.identity),
-      recipient: fingerprint(contact.identity), text: args.text, created_at: Date.now(),
-    };
-    message = messageSchema.parse(message);
+      recipient: fingerprint(contact.identity), text: args.text, created_at: Date.now(), origin: localOrigin(),
+      ...(agent ? { agent } : {}),
+    });
+    let message = messageSchema.parse(created);
+    const candidate = message.signature;
     if (this.store.get("sent", id)) return { status: "delivered", message_id: id, conversation_id: message.conversation_id };
     this.store.put("outbox", id, message, true);
     message = this.store.get<PeerMessage>("outbox", id)!;
-    if (message.text !== args.text || message.recipient !== fingerprint(contact.identity) || (args.conversation_id && message.conversation_id !== args.conversation_id)) throw new Error("Concurrent message id conflict");
+    if (this.conflicts(message, args, fingerprint(contact.identity)) || (!existing && message.signature !== candidate)) throw new Error("Concurrent message id conflict");
     return this.deliver(message);
+  }
+  private profileFor(args: SendOptions): AgentMeta | undefined {
+    return agentProfile({
+      harness: args.harness ?? this.agent.harness,
+      name: args.agent_name ?? this.agent.name,
+      model: args.model ?? this.agent.model,
+      session_id: args.session_id ?? this.agent.session_id,
+    });
+  }
+  private conflicts(existing: PeerMessage, args: SendOptions, recipient: string): boolean {
+    if (existing.text !== args.text || existing.recipient !== recipient) return true;
+    if (args.conversation_id && existing.conversation_id !== args.conversation_id) return true;
+    const explicit: Array<[keyof AgentMeta, string | undefined]> = [
+      ["harness", args.harness], ["name", args.agent_name], ["model", args.model], ["session_id", args.session_id],
+    ];
+    return explicit.some(([key, value]) => value !== undefined && existing.agent?.[key] !== value);
   }
   private async deliver(message: PeerMessage) {
     try {
