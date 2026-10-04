@@ -61,7 +61,8 @@ test("adapter delivers mail to the other PC and queues while the host is down", 
     token: LAPTOP_TOKEN,
     agentId: "laptop-reviewer",
     port: 0,
-    bind: "127.0.0.1",
+    bind: "0.0.0.0",
+    container: true,
     dataDir: join(dir, "adapter"),
     pollMs: 200,
     wake: "off",
@@ -138,6 +139,9 @@ test("adapter delivers mail to the other PC and queues while the host is down", 
 
     const base = adapter.url.replace(/\/mcp$/, "");
     const page = await fetch(`${base}/dashboard`);
+    const root = await fetch(base, { redirect: "manual" });
+    assert.equal(root.status, 302);
+    assert.equal(root.headers.get("location"), "/dashboard");
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Mailbox dashboard/);
     const api = await fetch(`${base}/api/dashboard`);

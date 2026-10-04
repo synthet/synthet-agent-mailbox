@@ -95,7 +95,9 @@ WAKE=off
 WAKE_WORKSPACE=D:\Projects\your-checkout
 ```
 
-Then `npm run adapter`. Allow inbound TCP `8787` on the host from the tailnet.
+Then `npm run adapter`, or run `docker compose up -d --build adapter` to keep the local adapter running in Docker. Compose publishes its port only on `127.0.0.1:8788`; open [the dashboard](http://127.0.0.1:8788/dashboard) to inspect it. Use `WAKE=off` in the container because agent CLIs run on the host. Turn on Docker Desktop's start-at-login setting to restart the adapter after signing in. The mailbox container remains available with `docker compose up -d --build mailbox`.
+
+Allow inbound TCP `8787` on the host from the tailnet.
 
 ## Point Cursor at the adapter
 

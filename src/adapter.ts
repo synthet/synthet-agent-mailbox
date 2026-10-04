@@ -48,6 +48,8 @@ export interface AdapterServerOptions {
   workspace?: string;
   wakeTimeoutMs: number;
   requestTimeoutMs: number;
+  /** Allow a container listener; publish the host port on loopback only. */
+  container?: boolean;
   allowedOrigins?: Set<string>;
   onFatal?: (error: Error) => void;
 }
@@ -71,7 +73,8 @@ interface SendToolResult {
 }
 
 export async function startAdapter(options: AdapterServerOptions): Promise<RunningAdapter> {
-  if (!isLoopback(options.bind)) {
+  const containerBind = options.container === true && (options.bind === "0.0.0.0" || options.bind === "::");
+  if (!isLoopback(options.bind) && !containerBind) {
     throw new Error("The adapter listens on loopback only. Point your local MCP client at http://127.0.0.1:<port>/mcp on this PC.");
   }
   mkdirSync(options.dataDir, { recursive: true });
@@ -299,6 +302,7 @@ export async function startAdapter(options: AdapterServerOptions): Promise<Runni
 
   const app = express();
   app.disable("x-powered-by");
+  app.get("/", (_req, res) => res.redirect("/dashboard"));
   app.get("/health", (_req, res) => {
     res.json({ ok: true, service: "adapter", agent_id: options.agentId, mailbox: identityOk ? "connected" : "unreachable" });
   });
@@ -642,6 +646,7 @@ export function adapterOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): Ada
     agentId,
     port: Number(env.ADAPTER_PORT ?? 8788),
     bind: env.ADAPTER_BIND ?? "127.0.0.1",
+    container: env.ADAPTER_CONTAINER === "1",
     dataDir: env.ADAPTER_DATA_DIR ?? "data/adapter",
     pollMs: Number(env.POLL_MS ?? 5000),
     wake,
