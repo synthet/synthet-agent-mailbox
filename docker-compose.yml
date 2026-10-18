@@ -1,20 +1,15 @@
 services:
-  adapter:
+  dashboard:
     build: .
-    container_name: mcp-agent-mailbox-adapter
-    restart: unless-stopped
-    env_file:
-      - .env
+    container_name: agent-mailbox
+    restart: "no"
     environment:
-      ADAPTER_BIND: 0.0.0.0
-      ADAPTER_CONTAINER: "1"
-      ADAPTER_DATA_DIR: /data
-      ADAPTER_PORT: "8788"
-      # .env uses 127.0.0.1, which is the container itself. The mailbox is on the host.
-      MAILBOX_URL: http://host.docker.internal:8797/mcp
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      AGENT_MAIL_HOME: /data/agent-mail
+      DASHBOARD_BIND: 0.0.0.0
+      DASHBOARD_CONTAINER: "1"
+      DASHBOARD_PORT: "8788"
     ports:
       - "127.0.0.1:8788:8788"
     volumes:
-      - ./data/adapter:/data
+      # This PC's peer store. The container only reads it.
+      - ${USERPROFILE}/.agent-mail:/data/agent-mail:ro
