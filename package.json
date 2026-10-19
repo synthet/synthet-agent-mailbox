@@ -1,5 +1,5 @@
 {
-  "name": "mcp-agent-mailbox",
+  "name": "synthet-agent-mailbox",
   "version": "0.3.0",
   "description": "Direct encrypted peer messaging with LAN discovery, a standalone CLI, and stdio MCP",
   "type": "module",
