@@ -16,7 +16,7 @@
     "legacy:mailbox": "node dist/index.js",
     "adapter": "tsx src/adapter-main.ts",
     "start:adapter": "node dist/adapter-main.js",
-    "test": "npm run build && node --test test/peer.test.mjs",
+    "test": "npm run build && node --test test/peer.test.mjs test/fabric-local.test.mjs test/fabric-sync.test.mjs test/fabric-harness.test.mjs test/fabric-a2a.test.mjs",
     "test:legacy": "node --import tsx --test test/protocol.test.ts test/wake.test.ts test/integration.test.ts"
   },
   "engines": {

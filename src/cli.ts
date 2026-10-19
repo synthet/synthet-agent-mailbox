@@ -9,6 +9,10 @@ import { agentProfile } from "./peer/metadata.js";
 import { startPeerMcp } from "./peer/mcp.js";
 import { Peer } from "./peer/peer.js";
 import type { Contact } from "./peer/store.js";
+import { startDaemon } from "./fabric/daemon.js";
+import { installHarness, inspectHarness, uninstallHarness } from "./fabric/harness.js";
+import { Journal } from "./fabric/journal.js";
+import { syncOnce } from "./fabric/sync.js";
 
 const help = `agent-mail — direct encrypted peer messaging (no mailbox or adapter)
 
@@ -30,6 +34,14 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
   flush                                 Retry queued messages
   listen                                Receive messages until stopped
   mcp                                   Stdio MCP + peer receiver
+  daemon                                Host journal and peer receiver
+  register --session ID                 Register this session on the journal
+  publish --session ID --text TEXT      Publish a journal message
+       [--audience direct|group|broadcast|topic] [--scope ID]
+  digest [--session ID]                 Print a short untrusted inbox digest
+  sync FINGERPRINT --endpoint URL       Exchange granted events with a pinned peer
+  harness install|inspect|uninstall     Project-local hook templates
+       --target DIR --harness claude|codex|cursor|agy
 
 Options: --home PATH (or AGENT_MAIL_HOME), --port 47832, --bind 0.0.0.0,
   --interface IPv4 (LAN multicast interface), --timeout 1200 (discovery ms),
@@ -51,6 +63,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     harness: { type: "string" }, "agent-name": { type: "string" }, model: { type: "string" }, session: { type: "string" },
     port: { type: "string" }, bind: { type: "string" }, interface: { type: "string" }, timeout: { type: "string" },
     "no-discovery": { type: "boolean" }, "no-listen": { type: "boolean" }, "no-tailscale": { type: "boolean" }, help: { type: "boolean", short: "h" },
+    scope: { type: "string" }, audience: { type: "string" }, subject: { type: "string" }, target: { type: "string" },
   } });
   const [command, argument] = positionals;
   if (values.help || !command) { console.log(help); return; }
@@ -96,9 +109,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case "send": {
       if ((values.text === undefined) === (values.file === undefined)) throw new Error("Provide exactly one of --text or --file");
-      const result = await peer.send({ recipient: required(argument, "recipient"),
+      const payload = { recipient: required(argument, "recipient"),
         text: values.text ?? readFileSync(values.file === "-" ? 0 : values.file!, "utf8"),
-        message_id: values["message-id"], conversation_id: values.conversation });
+        message_id: values["message-id"], conversation_id: values.conversation };
+      const proxied = await daemonPost(home, "/v1/peer-send", payload);
+      const result = proxied ?? await peer.send(payload);
       output(result);
       if (result.status === "queued") process.exitCode = 2;
       break;
@@ -110,6 +125,60 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case "flush": {
       const results = await peer.flush(); output(results);
       if (results.some((r) => r.status === "queued")) process.exitCode = 2;
+      break;
+    }
+    case "daemon": {
+      const running = await startDaemon(loadIdentity(home), home, { port: values.port ? Number(values.port) : 0, bind: values.bind ?? "127.0.0.1", discovery: !values["no-discovery"], a2a: process.env.AGENT_MAIL_A2A === "1" });
+      journalSession(home, loadIdentity(home));
+      console.error(`daemon peer ${running.peerPort} control ${running.controlPort}`);
+      await new Promise<void>((resolve) => {
+        const stop = () => { void running.close().finally(resolve); };
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+      });
+      break;
+    }
+    case "register": {
+      const journal = openJournal(home);
+      try { output(journal.registerSession({ session_id: required(values.session, "--session"), alias: values["agent-name"], harness: values.harness, model: values.model })); }
+      finally { journal.close(); }
+      break;
+    }
+    case "publish": {
+      const journal = openJournal(home);
+      try {
+        const kind = (values.audience ?? "group") as "direct" | "group" | "broadcast" | "topic";
+        output(journal.publish({
+          session_id: required(values.session, "--session"),
+          audience: kind === "direct" ? { kind, agent_ids: [required(argument, "agent id")] } : { kind, scope_id: required(values.scope, "--scope") },
+          body: required(values.text, "--text"), subject: values.subject,
+        }));
+      } finally { journal.close(); }
+      break;
+    }
+    case "digest": {
+      try {
+        const journal = openJournal(home);
+        try { output(journal.digest(values.session ?? "cli")); }
+        finally { journal.close(); }
+      } catch (error) { output({ ok: true, untrusted: true, messages: [], warning: error instanceof Error ? error.message : "unavailable" }); }
+      break;
+    }
+    case "sync": {
+      const journal = openJournal(home);
+      try {
+        const contact = peer.store.contact(required(argument, "fingerprint"));
+        output(await syncOnce(journal, loadIdentity(home), { endpoint: required(values.endpoint, "--endpoint"), identity: contact.identity }, (id) => peer.store.get<Contact>("contacts", id)?.identity));
+      } finally { journal.close(); }
+      break;
+    }
+    case "harness": {
+      const action = required(argument, "install, inspect, or uninstall");
+      const target = required(values.target, "--target");
+      if (action === "install") output(installHarness(target, required(values.harness, "--harness")));
+      else if (action === "inspect") output(inspectHarness(target));
+      else if (action === "uninstall") output(uninstallHarness(target));
+      else throw new Error("Unknown harness action");
       break;
     }
     case "listen":
@@ -130,6 +199,34 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       break;
     }
     default: throw new Error(`Unknown command: ${command}\n${help}`);
+  }
+}
+
+function openJournal(home: string): Journal {
+  return new Journal(home, loadIdentity(home));
+}
+
+function journalSession(home: string, identity: ReturnType<typeof loadIdentity>): void {
+  const journal = new Journal(home, identity);
+  try { journal.registerSession({ session_id: "cli", alias: identity.name }); }
+  finally { journal.close(); }
+}
+
+async function daemonPost(home: string, path: string, body: unknown): Promise<{ status: string; message_id: string; conversation_id: string; error?: string } | undefined> {
+  try {
+    const file = JSON.parse(readFileSync(join(home, "daemon.json"), "utf8")) as { controlPort: number; token: string };
+    const health = await fetch(`http://127.0.0.1:${file.controlPort}/health`, { headers: { authorization: `Bearer ${file.token}` }, signal: AbortSignal.timeout(300) });
+    if (!health.ok) return undefined;
+    const response = await fetch(`http://127.0.0.1:${file.controlPort}${path}`, {
+      method: "POST", headers: { authorization: `Bearer ${file.token}`, "content-type": "application/json" },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return await response.json() as { status: string; message_id: string; conversation_id: string; error?: string };
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") return undefined;
+    if (error instanceof Error && /ECONNREFUSED|fetch failed/i.test(error.message)) return undefined;
+    return undefined;
   }
 }
 

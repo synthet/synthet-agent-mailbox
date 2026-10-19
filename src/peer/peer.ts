@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { networkInterfaces } from "node:os";
 import { z } from "zod";
 import { advertisement, advertise, discover, discoverTailscale, type DiscoveryOptions } from "./discovery.js";
@@ -150,8 +150,12 @@ export class Peer {
   }
   status() { return { pending: this.store.list("outbox").length, unread: this.inbox(Number.MAX_SAFE_INTEGER).length, sent: this.store.list("sent").length }; }
 
-  async listen(options: { port?: number; bind?: string; discovery?: boolean } = {}) {
+  async listen(options: { port?: number; bind?: string; discovery?: boolean; handle?: (req: IncomingMessage, res: ServerResponse) => Promise<boolean> | boolean } = {}) {
     const server = createServer(async (req, res) => {
+      if (options.handle) {
+        try { if (await options.handle(req, res)) return; }
+        catch { if (!res.headersSent) res.writeHead(400).end(); return; }
+      }
       if (req.method === "GET" && req.url?.startsWith("/identity?")) {
         try {
           const url = new URL(req.url, "http://localhost");
