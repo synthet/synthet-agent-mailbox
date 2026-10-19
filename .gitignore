@@ -12,3 +12,8 @@ mailbox.db-shm
 codex-session-*.md
 20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.md
 .agent-mail/
+/docs/_local/
+/.agent/local/
+/.cursor/mcp.json
+/.claude/settings.local.json
+/.agents/mcp_config.json

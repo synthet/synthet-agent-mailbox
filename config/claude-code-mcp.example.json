@@ -1,8 +1,19 @@
 {
   "mcpServers": {
     "agent-mail": {
+      "type": "stdio",
       "command": "node",
-      "args": ["dist/cli.js", "mcp", "--harness", "claude-code", "--agent-name", "claude", "--model", "claude"]
+      "args": [
+        "C:/path/to/synthet-agent-mailbox/dist/cli.js",
+        "mcp",
+        "--no-listen",
+        "--harness",
+        "claude-code",
+        "--agent-name",
+        "claude",
+        "--model",
+        "claude"
+      ]
     }
   }
 }
