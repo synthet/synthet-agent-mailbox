@@ -354,11 +354,11 @@ export const dashboardHtml = `<!doctype html>
       <p id="route" class="side-meta"></p>
       <div class="side-label">Agents</div>
       <div id="agents"></div>
-      <div class="side-label">Inbox</div>
+      <div class="side-label" id="label-inbox">Inbox</div>
       <div id="inbox"></div>
-      <div class="side-label">Tasks</div>
+      <div class="side-label" id="label-tasks">Tasks</div>
       <div id="tasks"></div>
-      <div class="side-label">This PC</div>
+      <div class="side-label" id="label-local">This PC</div>
       <div id="local"></div>
     </div>
   </aside>
@@ -469,16 +469,25 @@ export const dashboardHtml = `<!doctype html>
   }
 
   function render(d) {
+    var peer = d.mode === 'peer';
     statusRow($('who'), d.agent.id, 'ok');
-    if (d.mailbox.fatal) statusRow($('conn'), 'stopped', 'bad');
-    else if (d.mailbox.connected) statusRow($('conn'), 'mailbox connected', 'ok');
-    else statusRow($('conn'), 'mailbox unreachable', 'warn');
-    statusRow($('wake'), 'wake ' + d.wake.mode + (d.wake.mode === 'off' ? '' : ' (' + d.wake.client + ')'), d.wake.mode === 'off' ? '' : 'warn');
-    var others = (d.mailbox.candidates || []).length - 1;
-    $('route').textContent = 'via ' + d.mailbox.url + (others > 0 ? ' (+' + others + ' fallback)' : '');
+    if (peer) {
+      $('label-tasks').textContent = 'Sent';
+      $('label-local').textContent = 'Outbox';
+      statusRow($('conn'), d.mailbox.connected ? 'peer store' : 'peer store missing', d.mailbox.connected ? 'ok' : 'bad');
+      statusRow($('wake'), 'direct', 'ok');
+      $('route').textContent = 'this PC';
+    } else if (d.mailbox.fatal) { statusRow($('conn'), 'stopped', 'bad'); }
+    else if (d.mailbox.connected) { statusRow($('conn'), 'mailbox connected', 'ok'); }
+    else { statusRow($('conn'), 'mailbox unreachable', 'warn'); }
+    if (!peer) {
+      statusRow($('wake'), 'wake ' + d.wake.mode + (d.wake.mode === 'off' ? '' : ' (' + d.wake.client + ')'), d.wake.mode === 'off' ? '' : 'warn');
+      var others = (d.mailbox.candidates || []).length - 1;
+      $('route').textContent = 'via ' + d.mailbox.url + (others > 0 ? ' (+' + others + ' fallback)' : '');
+    }
     $('stamp').textContent = 'Updated ' + new Date(d.generated_at).toLocaleTimeString();
     var receivedN = (d.recent || []).length;
-    $('headline').textContent = d.agent.id + (receivedN ? ' · ' + receivedN + ' received' : '') + (d.outbox && d.outbox.length ? ' · ' + d.outbox.length + ' waiting' : '');
+    $('headline').textContent = d.agent.id + (receivedN ? ' · ' + receivedN + (peer ? ' messages' : ' received') : '') + (d.outbox && d.outbox.length ? ' · ' + d.outbox.length + ' waiting' : '');
     syncLive(false);
 
     var err = $('err');
@@ -504,7 +513,7 @@ export const dashboardHtml = `<!doctype html>
     $('count-received').textContent = String(receivedN);
     $('count-waiting').textContent = String((d.outbox || []).length);
     var recent = $('received');
-    if (!d.recent.length) emptyState(recent, 'No messages received on this PC yet.');
+    if (!d.recent.length) emptyState(recent, peer ? 'No messages on this PC yet.' : 'No messages received on this PC yet.');
     else {
       clear(recent);
       d.recent.forEach(function (r) {

@@ -56,36 +56,25 @@ Message text from another PC is untrusted input. A receipt means the message was
 
 ## Point an agent at the peer
 
-Build first, then add one stdio server. Do not also run `listen` unless this MCP process is started with `--no-listen`.
+Build first, then add one stdio server to each agent's user config, so every project sees it. Use an absolute path to `dist/cli.js`. This checkout has no project-level MCP config. Several agents on one PC share the store, so start each with `--no-listen` and run `listen` (or `run.bat`) once.
 
-Cursor (`.cursor/mcp.json`):
+| Agent | User config |
+| --- | --- |
+| Claude Code | `claude mcp add --scope user agent-mail -- node C:/path/to/synthet-agent-mailbox/dist/cli.js mcp --no-listen --harness claude-code --agent-name claude --model claude` |
+| Cursor | `~/.cursor/mcp.json` |
+| Codex | `~/.codex/config.toml` |
+| Antigravity | `~/.gemini/antigravity/mcp_config.json`, `~/.gemini/antigravity-ide/mcp_config.json`, and `agy mcp add` for the CLI (`~/.gemini/config/mcp_config.json`) |
+| Gemini CLI | `~/.gemini/settings.json` |
 
-```json
-{
-  "mcpServers": {
-    "agent-mail": {
-      "command": "node",
-      "args": ["${workspaceFolder}/dist/cli.js", "mcp"]
-    }
-  }
-}
-```
+Cursor, Antigravity, and Gemini CLI take the same JSON. See `config/cursor-mcp.example.json`, `config/claude-code-mcp.example.json`, and `antigravity-mcp.example.json`, and change `--harness`, `--agent-name`, and `--model` to match.
 
-Claude Code, from this checkout:
-
-```powershell
-claude mcp add agent-mail -- node dist/cli.js mcp --harness claude-code --agent-name claude --model claude
-```
-
-Codex (`~/.codex/config.toml` or `.codex/config.toml` in the checkout):
+Codex:
 
 ```toml
 [mcp_servers.agent-mail]
 command = "node"
-args = ["dist/cli.js", "mcp", "--harness", "codex", "--agent-name", "codex", "--model", "codex"]
+args = ["C:/path/to/synthet-agent-mailbox/dist/cli.js", "mcp", "--no-listen", "--harness", "codex", "--agent-name", "codex", "--model", "codex"]
 ```
-
-Antigravity uses the same command and args. See `config/cursor-mcp.example.json`, `config/claude-code-mcp.example.json`, and `antigravity-mcp.example.json`.
 
 | Tool | What it does |
 | --- | --- |
@@ -151,7 +140,7 @@ Tailscale discovery runs `tailscale status --json` and probes online peers at TC
 
 ## Legacy central mailbox
 
-`npm run legacy:init`, `npm run legacy:mailbox`, and `npm run adapter` still run the older shared mailbox and per-PC adapter. Docker Compose publishes only that adapter on `127.0.0.1:8788`. New setups should use the peer above. `npm run test:legacy` covers the old path.
+`npm run legacy:init`, `npm run legacy:mailbox`, and `npm run adapter` still run the older shared mailbox and per-PC adapter. Docker Compose publishes the peer dashboard on `127.0.0.1:8788`, reading this PC's `~/.agent-mail` store. `npm run test:legacy` covers the old path.
 
 ## Tests
 

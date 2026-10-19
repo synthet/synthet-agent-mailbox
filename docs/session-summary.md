@@ -39,7 +39,7 @@ Stable agent values are parameters on the MCP process, not discovered from the c
 "args": ["dist/cli.js", "mcp", "--harness", "cursor", "--agent-name", "cursor", "--model", "composer"]
 ```
 
-The same flags exist as `AGENT_MAIL_HARNESS`, `AGENT_MAIL_AGENT_NAME`, `AGENT_MAIL_MODEL`, and `AGENT_MAIL_SESSION`. This checkout's `.cursor/mcp.json` sets harness and agent name only. A chat session id is not visible to the MCP process; pass `session_id` on `send_message` when the agent knows it.
+The same flags exist as `AGENT_MAIL_HARNESS`, `AGENT_MAIL_AGENT_NAME`, `AGENT_MAIL_MODEL`, and `AGENT_MAIL_SESSION`. Each agent's user-level MCP config sets harness, agent name, and model. A chat session id is not visible to the MCP process; pass `session_id` on `send_message` when the agent knows it.
 
 Reusing a `message_id` with different text or an explicit agent field is rejected. A retry keeps the origin and signature from the first queue.
 

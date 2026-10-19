@@ -2,7 +2,17 @@
   "mcpServers": {
     "agent-mail": {
       "command": "node",
-      "args": ["dist/cli.js", "mcp", "--harness", "antigravity", "--agent-name", "antigravity", "--model", "gemini"]
+      "args": [
+        "C:/path/to/synthet-agent-mailbox/dist/cli.js",
+        "mcp",
+        "--no-listen",
+        "--harness",
+        "antigravity",
+        "--agent-name",
+        "antigravity",
+        "--model",
+        "gemini"
+      ]
     }
   }
 }
