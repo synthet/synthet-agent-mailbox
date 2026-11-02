@@ -12,7 +12,7 @@ import { initIdentity, loadIdentity, publicIdentity, fingerprint, signed } from 
 import { advertisement, advertise, discover, parseAdvert, probeIdentity, tailscaleAddresses } from "../dist/peer/discovery.js";
 import { Peer } from "../dist/peer/peer.js";
 import { PeerStore } from "../dist/peer/store.js";
-import { createPeerMcp } from "../dist/peer/mcp.js";
+import { createPeerMcp, journalLoadError } from "../dist/peer/mcp.js";
 import { seal, unseal, receipt, verifyReceipt, signMessage, verifyMessage } from "../dist/peer/wire.js";
 
 function setup(t) {
@@ -194,4 +194,53 @@ test("CLI exports no private keys, rejects malformed commands, and stdio MCP sta
   await client.connect(transport);
   const who = await client.callTool({ name: "whoami", arguments: {} });
   assert.equal(JSON.parse(who.content[0].text).name, "Desktop");
+});
+
+test("MCP lets same-PC sessions message and broadcast through the host journal", async (t) => {
+  const { dir, a } = setup(t);
+  const home = join(dir, "a");
+  // Two harness processes on one PC share the identity and store directory.
+  const claude = createPeerMcp(new Peer(a, home, { tailscale: false }, { harness: "claude-code", name: "claude", model: "claude" }));
+  const codex = createPeerMcp(new Peer(a, home, { tailscale: false }, { harness: "codex", name: "codex", model: "codex" }));
+  // Closed in the test body: setup's t.after removes the folder first, and Windows cannot delete an open journal.db.
+  const closers = [];
+  const connect = async (server) => {
+    const client = new Client({ name: "test", version: "1" });
+    const [left, right] = InMemoryTransport.createLinkedPair();
+    await server.connect(left);
+    await client.connect(right);
+    closers.push(async () => { await client.close(); await server.close(); });
+    return async (name, args) => {
+      const result = await client.callTool({ name, arguments: args });
+      return { error: result.isError === true, data: result.isError ? result.content[0].text : JSON.parse(result.content[0].text) };
+    };
+  };
+  try {
+    const callA = await connect(claude);
+    const callB = await connect(codex);
+    await callA("mailbox_register_session", { session_id: "s-claude", alias: "Builder" });
+    const reviewer = (await callB("mailbox_register_session", { session_id: "s-codex", alias: "Reviewer" })).data;
+
+    await callA("mailbox_publish", { session_id: "s-claude", agent_id: reviewer.agent_id, subject: "direct", body: "hi codex" });
+    assert.deepEqual((await callB("mailbox_list", { session_id: "s-codex" })).data.map((m) => m.subject), ["direct"]);
+
+    await callA("mailbox_subscribe", { session_id: "s-claude", scope_id: "local" });
+    await callB("mailbox_subscribe", { session_id: "s-codex", scope_id: "local" });
+    await callA("mailbox_publish", { session_id: "s-claude", audience: "broadcast", scope_id: "local", subject: "all", body: "hello all" });
+    assert.ok((await callB("mailbox_list", { session_id: "s-codex" })).data.some((m) => m.subject === "all"));
+
+    const misrouted = await callA("send_message", { recipient: "codex", text: "meant for a local agent" });
+    assert.equal(misrouted.error, true);
+    assert.match(misrouted.data, /mailbox_publish/);
+  } finally {
+    for (const close of closers) await close();
+  }
+});
+
+test("a native-module mismatch becomes an actionable local-mailbox error", () => {
+  const mismatch = Object.assign(new Error("compiled against a different Node.js version"), { code: "ERR_DLOPEN_FAILED" });
+  assert.match(journalLoadError(mismatch).message, /npm rebuild better-sqlite3/);
+  assert.match(journalLoadError(mismatch).message, /send_message to other machines still works/);
+  const other = new Error("disk full");
+  assert.equal(journalLoadError(other), other);
 });
