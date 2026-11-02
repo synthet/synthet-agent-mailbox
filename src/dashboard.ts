@@ -7,8 +7,8 @@ export const dashboardHtml = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mailbox Dashboard</title>
-<link rel="icon" href="/favicon.svg?v=3" type="image/svg+xml">
-<link rel="icon" href="/favicon.ico?v=3" sizes="16x16 32x32 48x48">
+<link rel="icon" href="/favicon.svg?v=4" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico?v=4" sizes="16x16 32x32 48x48">
 <style>
   :root {
     --color-bg-primary: #1e1e1e;
@@ -316,11 +316,11 @@ export const dashboardHtml = `<!doctype html>
 <body>
 <header class="shell">
   <div class="brand">
-    <!-- Agent Mailbox mark, 16 px simplification (image-scoring-ui icons/projects/agent-mailbox/mark-16.svg) -->
+    <!-- Agent Mailbox mark, 16 px simplification (image-scoring-ui icons/projects/synthet-agent-mailbox/mark-16.svg) -->
     <svg class="brand-mark" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="64 64 896 896" aria-hidden="true">
       <rect x="64" y="64" width="896" height="896" rx="184" fill="#101014"/>
-      <path d="M 304,320 H 720 L 512,476 Z" fill="#A9B7C6"/>
-      <path d="M 224,380 L 512,596 L 800,380 V 704 H 224 Z" fill="#A9B7C6"/>
+      <path d="M 224,272 L 800,272 L 512,480 Z" fill="#A9B7C6"/>
+      <path d="M 224,400 L 512,608 L 800,400 L 800,752 L 224,752 Z" fill="#A9B7C6"/>
     </svg>
     <span class="brand-name">Mailbox</span>
   </div>
