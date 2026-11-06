@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { createSocket } from "node:dgram";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initIdentity, loadIdentity, publicIdentity, fingerprint, signed } from "../dist/peer/identity.js";
-import { advertisement, advertise, discover, parseAdvert, probeIdentity, tailscaleAddresses } from "../dist/peer/discovery.js";
+import { advertisement, advertise, discover, joinMulticast, multicastInterfaces, parseAdvert, probeIdentity, tailscaleAddresses } from "../dist/peer/discovery.js";
 import { Peer } from "../dist/peer/peer.js";
 import { PeerStore } from "../dist/peer/store.js";
 import { createPeerMcp, journalLoadError } from "../dist/peer/mcp.js";
@@ -122,6 +123,35 @@ test("direct delivery, restart-safe inbox, idempotency, signed discovery probe, 
   bob.store.remove("contacts", fingerprint(a));
   assert.equal((await alice.send({ recipient: "Zephyr", text: "revoked" })).status, "queued");
   assert.equal(bob.inbox().length, 1);
+});
+
+test("multicast uses every external IPv4 interface unless one is selected", () => {
+  const interfaces = {
+    Loopback: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
+    WSL: [{ address: "198.51.100.1", family: "IPv4", internal: false }],
+    Ethernet: [{ address: "fe80::1", family: "IPv6", internal: false }, { address: "192.0.2.10", family: "IPv4", internal: false }],
+    WiFi: [{ address: "192.0.2.20", family: "IPv4", internal: false }],
+  };
+  assert.deepEqual(multicastInterfaces(undefined, interfaces), ["198.51.100.1", "192.0.2.10", "192.0.2.20"]);
+  assert.deepEqual(multicastInterfaces("192.0.2.20", interfaces), ["192.0.2.20"]);
+  assert.deepEqual(multicastInterfaces(undefined, {}), []);
+});
+
+test("joining multicast again is safe and one bad interface does not stop the others", async (t) => {
+  const seen = [];
+  const fake = { addMembership(group, address) {
+    seen.push(address);
+    if (address === "10.0.0.1") throw Object.assign(new Error("gone"), { code: "EADDRNOTAVAIL" });
+  } };
+  assert.equal(joinMulticast(fake, "239.255.77.32", ["10.0.0.1", "10.0.0.2", "10.0.0.3"]), 2);
+  assert.deepEqual(seen, ["10.0.0.1", "10.0.0.2", "10.0.0.3"]);
+
+  const socket = createSocket({ type: "udp4", reuseAddr: true });
+  t.after(() => socket.close());
+  await new Promise((resolve) => socket.bind(0, "0.0.0.0", resolve));
+  const interfaces = multicastInterfaces();
+  assert.equal(joinMulticast(socket, "239.255.77.32", interfaces), interfaces.length);
+  assert.equal(joinMulticast(socket, "239.255.77.32", interfaces), 0);
 });
 
 test("LAN discovery verifies nonce/signature, resolves peers and sends without an explicit endpoint", async (t) => {
