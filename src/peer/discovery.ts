@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createSocket, type Socket } from "node:dgram";
 import { isIP } from "node:net";
+import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -9,6 +10,7 @@ import { fingerprint, publicIdentity, publicIdentitySchema, signed, verified, ty
 
 export const DISCOVERY_PORT = 47831;
 export const DISCOVERY_GROUP = "239.255.77.31";
+const REJOIN_MS = 30_000;
 export interface DiscoveredPeer { identity: PublicIdentity; fingerprint: string; endpoint: string }
 export interface DiscoveryOptions { port?: number; group?: string; interface?: string; timeoutMs?: number; tailscale?: boolean; peerPort?: number }
 const querySchema = z.object({ protocol: z.literal("agent-mail/1 discover"), nonce: z.string().uuid() }).strict();
@@ -27,13 +29,31 @@ export function advertisement(identity: Identity, port: number, nonce: string): 
   return { payload, signature: signed(identity, payload) };
 }
 
+/** The OS default can be a virtual adapter such as WSL, so multicast uses every external IPv4 interface. */
+export function multicastInterfaces(selected?: string, interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): string[] {
+  if (selected) return [selected];
+  return Object.values(interfaces).flatMap((addresses) => addresses ?? []).filter((a) => a.family === "IPv4" && !a.internal).map((a) => a.address);
+}
+
+/** Returns how many interfaces joined now. A repeat join fails, and its error code differs by OS, so failures are not told apart. */
+export function joinMulticast(socket: Pick<Socket, "addMembership">, group: string, interfaces: string[]): number {
+  return interfaces.filter((address) => {
+    try { socket.addMembership(group, address); return true; }
+    catch { return false; }
+  }).length;
+}
+
 export async function advertise(identity: Identity, tcpPort: number, options: DiscoveryOptions = {}): Promise<() => Promise<void>> {
   const socket = createSocket({ type: "udp4", reuseAddr: true });
   await bind(socket, options.port ?? DISCOVERY_PORT, "0.0.0.0");
+  const group = options.group ?? DISCOVERY_GROUP;
   try {
     socket.setMulticastLoopback(true);
-    socket.addMembership(options.group ?? DISCOVERY_GROUP, options.interface);
+    if (!joinMulticast(socket, group, multicastInterfaces(options.interface))) socket.addMembership(group, options.interface);
   } catch (error) { socket.close(); throw error; }
+  // Sleep and address changes drop memberships, and a long-running listener would stop being discoverable.
+  const rejoin = setInterval(() => joinMulticast(socket, group, multicastInterfaces(options.interface)), REJOIN_MS);
+  rejoin.unref();
   // A bounded reply budget prevents multicast traffic from becoming an amplification service.
   let window = Date.now();
   let replies = 0;
@@ -48,7 +68,7 @@ export async function advertise(identity: Identity, tcpPort: number, options: Di
     } catch { /* Ignore unrelated or malformed LAN traffic. */ }
   });
   socket.on("error", (error) => console.error(`Discovery: ${error.message}`));
-  return () => closeSocket(socket);
+  return () => { clearInterval(rejoin); return closeSocket(socket); };
 }
 
 export async function discover(options: DiscoveryOptions = {}): Promise<DiscoveredPeer[]> {
@@ -61,7 +81,6 @@ export async function discover(options: DiscoveryOptions = {}): Promise<Discover
   try {
     socket.setMulticastLoopback(true);
     socket.setMulticastTTL(1);
-    if (options.interface) socket.setMulticastInterface(options.interface);
     return await new Promise<DiscoveredPeer[]>((resolve, reject) => {
       const timer = setTimeout(() => resolve([...peers.values()]), timeout);
       socket.on("error", (error) => { clearTimeout(timer); reject(error); });
@@ -70,11 +89,23 @@ export async function discover(options: DiscoveryOptions = {}): Promise<Discover
         catch { /* Discovery data is untrusted until signature and nonce verification. */ }
       });
       const query = JSON.stringify({ protocol: "agent-mail/1 discover", nonce });
-      socket.send(query, options.port ?? DISCOVERY_PORT, options.group ?? DISCOVERY_GROUP, (error) => {
-        if (error) { clearTimeout(timer); reject(error); }
-      });
+      sendQuery(socket, query, options.port ?? DISCOVERY_PORT, options.group ?? DISCOVERY_GROUP, multicastInterfaces(options.interface))
+        .catch((error) => { clearTimeout(timer); reject(error); });
     });
   } finally { await closeSocket(socket); }
+}
+
+async function sendQuery(socket: Socket, query: string, port: number, group: string, interfaces: string[]): Promise<void> {
+  let sent = false;
+  let failure: unknown;
+  for (const address of interfaces.length ? interfaces : [undefined]) {
+    try {
+      if (address) socket.setMulticastInterface(address);
+      await new Promise<void>((resolve, reject) => socket.send(query, port, group, (error) => error ? reject(error) : resolve()));
+      sent = true;
+    } catch (error) { failure = error; }
+  }
+  if (!sent) throw failure;
 }
 
 function bind(socket: Socket, port: number, address: string): Promise<void> {
