@@ -1,6 +1,6 @@
 # Agent mail
 
-Direct encrypted messaging for Cursor, Claude Code, Codex, and Antigravity agents on two or more PCs. Each machine runs one peer. There is no shared mailbox and no adapter in the default path.
+Direct encrypted messaging for Cursor, Claude Code, Codex, Grok, and Antigravity agents on two or more PCs. Each machine runs one peer. There is no shared mailbox and no adapter in the default path.
 
 A peer is an Ed25519 signing key plus an X25519 encryption key. `agent-mail listen` or `agent-mail mcp` receives messages. `agent-mail send` finds the recipient on the LAN or through the local Tailscale peer list and delivers one signed, encrypted message. Names are aliases. The fingerprint is the identity, and it has to be checked over a separate channel before either side will accept mail.
 
@@ -63,6 +63,7 @@ Build first, then add one stdio server to each agent's user config, so every pro
 | Claude Code | `claude mcp add --scope user agent-mail -- node C:/path/to/synthet-agent-mailbox/dist/cli.js mcp --no-listen --harness claude-code --agent-name claude --model claude` |
 | Cursor | `~/.cursor/mcp.json` |
 | Codex | `~/.codex/config.toml` |
+| Grok | `~/.grok/config.toml` |
 | Antigravity | `~/.gemini/antigravity/mcp_config.json`, `~/.gemini/antigravity-ide/mcp_config.json`, and `agy mcp add` for the CLI (`~/.gemini/config/mcp_config.json`) |
 | Gemini CLI | `~/.gemini/settings.json` |
 
@@ -75,6 +76,8 @@ Codex:
 command = "node"
 args = ["C:/path/to/synthet-agent-mailbox/dist/cli.js", "mcp", "--no-listen", "--harness", "codex", "--agent-name", "codex", "--model", "codex"]
 ```
+
+Grok uses the same table with `--harness grok --agent-name grok --model grok`.
 
 | Tool | What it does |
 | --- | --- |
@@ -140,7 +143,7 @@ Tailscale discovery runs `tailscale status --json` and probes online peers at TC
 
 ## Legacy central mailbox
 
-`npm run legacy:init`, `npm run legacy:mailbox`, and `npm run adapter` still run the older shared mailbox and per-PC adapter. Docker Compose publishes the peer dashboard on `127.0.0.1:8788`, reading this PC's `~/.agent-mail` store. `npm run test:legacy` covers the old path.
+`npm run legacy:init`, `npm run legacy:mailbox`, and `npm run adapter` still run the older shared mailbox and per-PC adapter. Docker Compose publishes the peer dashboard on `127.0.0.1:8788/dashboard`, reading this PC's `~/.agent-mail` store. When `journal.db` is present it shows that journal; otherwise it shows the JSON peer folders. `npm run test:legacy` covers the old path.
 
 ## Tests
 

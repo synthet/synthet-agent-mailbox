@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "agent-mailbox": {
-      "command": "node",
-      "args": ["D:/Projects/mcp-agent-mailbox/dist/cli.js", "mcp", "--no-listen", "--harness", "cursor", "--agent-name", "cursor", "--model", "composer"]
-    }
-  }
-}

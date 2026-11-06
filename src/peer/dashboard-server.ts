@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import Database from "better-sqlite3";
 import express, { type Request } from "express";
 import { dashboardHtml } from "../dashboard.js";
 import { faviconIco, faviconSvg } from "../favicon.js";
@@ -46,6 +48,52 @@ function readAcked(home: string, id: string): boolean {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 
+interface JournalRead {
+  agents: { id: string }[];
+  messages: { created_at: number; sender: string; text: string; kind: string; thread_id: string }[];
+  messageCount: number;
+  tasks: Record<string, number>;
+}
+
+/**
+ * Read journal.db without creating files next to it, so the Docker mount can stay read-only.
+ * The journal runs in WAL mode, and SQLite cannot open a WAL database read-only from a read-only
+ * directory (it needs the -shm file), so read a private copy of the database and its WAL instead.
+ */
+function readJournal(home: string): JournalRead | null {
+  const path = join(home, "journal.db");
+  if (!existsSync(path)) return null;
+  const copyDir = mkdtempSync(join(tmpdir(), "agent-mail-journal-"));
+  const copy = join(copyDir, "journal.db");
+  copyFileSync(path, copy);
+  if (existsSync(`${path}-wal`)) copyFileSync(`${path}-wal`, `${copy}-wal`);
+  let db: Database.Database;
+  try { db = new Database(copy, { readonly: true, fileMustExist: true }); }
+  catch (error) { rmSync(copyDir, { recursive: true, force: true }); throw error; }
+  try {
+    db.pragma("query_only = ON");
+    const sessions = db.prepare(`SELECT a.alias AS alias, COALESCE(s.harness, '') AS harness
+      FROM sessions s JOIN agents a ON a.agent_id = s.agent_id
+      ORDER BY s.last_seen DESC`).all() as { alias: string; harness: string }[];
+    const agents = sessions.length
+      ? sessions.map((row) => ({ id: row.harness ? `${row.alias} · ${row.harness}` : row.alias }))
+      : db.prepare("SELECT alias AS id FROM agents ORDER BY alias").all() as { id: string }[];
+    const messages = db.prepare(`SELECT m.created_at, m.body AS text, m.audience_kind AS kind, m.thread_id,
+        COALESCE(a.alias, m.sender_agent, substr(m.sender_host, 1, 12)) AS sender
+      FROM messages m LEFT JOIN agents a ON a.agent_id = m.sender_agent
+      WHERE m.deleted = 0 ORDER BY m.created_at DESC LIMIT 40`).all() as JournalRead["messages"];
+    const messageCount = (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE deleted = 0").get() as { n: number }).n;
+    const tasks: Record<string, number> = {};
+    for (const row of db.prepare("SELECT state, COUNT(*) AS n FROM tasks GROUP BY state").all() as { state: string; n: number }[]) {
+      tasks[row.state] = row.n;
+    }
+    return { agents, messages, messageCount, tasks };
+  } finally {
+    db.close();
+    rmSync(copyDir, { recursive: true, force: true });
+  }
+}
+
 function snapshot(home: string) {
   const self = loadPublic(home);
   const selfFingerprint = fingerprint(self);
@@ -70,8 +118,9 @@ function snapshot(home: string) {
     .map(({ message, direction }) => `${new Date(message.created_at).toISOString()} ${direction} ${nameOf(direction === "to" || direction === "queued" ? message.recipient : message.sender)} ${message.text}`)
     .join("\n");
 
-  return {
+  const view = {
     mode: "peer" as const,
+    journal: false,
     generated_at: new Date().toISOString(),
     agent: { id: self.name },
     mailbox: { url: "peer", candidates: ["peer"], connected: true, fatal: null },
@@ -100,6 +149,27 @@ function snapshot(home: string) {
       last_error: "",
     })),
     log,
+  };
+  const journal = readJournal(home);
+  if (!journal) return view;
+  const known = journal.agents.some((agent) => agent.id === self.name || agent.id.startsWith(`${self.name} ·`));
+  const journalRecent = journal.messages.map((message) => ({
+    status: "new",
+    message: {
+      created_at: new Date(message.created_at).toISOString(),
+      sender: message.sender,
+      type: message.kind,
+      body: { text: message.text },
+      conversation_id: message.thread_id,
+    },
+  }));
+  return {
+    ...view,
+    journal: true,
+    agents: { agents: known ? journal.agents : [{ id: self.name }, ...journal.agents] },
+    remote: { inbox: { messages: journal.messageCount }, tasks: journal.tasks },
+    recent: journalRecent,
+    log: journal.messages.slice().reverse().map((message) => `${new Date(message.created_at).toISOString()} ${message.kind} ${message.sender} ${message.text}`).join("\n"),
   };
 }
 

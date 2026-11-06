@@ -475,9 +475,9 @@ export const dashboardHtml = `<!doctype html>
     var peer = d.mode === 'peer';
     statusRow($('who'), d.agent.id, 'ok');
     if (peer) {
-      $('label-tasks').textContent = 'Sent';
+      $('label-tasks').textContent = d.journal ? 'Tasks' : 'Sent';
       $('label-local').textContent = 'Outbox';
-      statusRow($('conn'), d.mailbox.connected ? 'peer store' : 'peer store missing', d.mailbox.connected ? 'ok' : 'bad');
+      statusRow($('conn'), d.mailbox.connected ? (d.journal ? 'journal' : 'peer store') : 'peer store missing', d.mailbox.connected ? 'ok' : 'bad');
       statusRow($('wake'), 'direct', 'ok');
       $('route').textContent = 'this PC';
     } else if (d.mailbox.fatal) { statusRow($('conn'), 'stopped', 'bad'); }
@@ -544,8 +544,8 @@ export const dashboardHtml = `<!doctype html>
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(render)
       .catch(function (e) {
-        var err = $('err'); err.hidden = false; clear(err); err.appendChild(el('div', 'Dashboard could not reach the adapter: ' + e.message));
-        statusRow($('conn'), 'adapter unreachable', 'bad');
+        var err = $('err'); err.hidden = false; clear(err); err.appendChild(el('div', 'Dashboard could not load: ' + e.message));
+        statusRow($('conn'), 'dashboard unreachable', 'bad');
         syncLive(true);
       });
   }
