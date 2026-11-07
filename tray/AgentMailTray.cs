@@ -73,16 +73,16 @@ static class AgentMailTray
         ui.CreateControl();
         IntPtr handle = ui.Handle;
 
-        var menu = new ContextMenuStrip();
-        var open = menu.Items.Add("Open dashboard", null, delegate { OpenDashboard(); });
-        open.Font = new Font(open.Font, FontStyle.Bold);
-        menu.Items.Add("Quit", null, delegate { Quit(); });
+        // The native Windows menu. ContextMenuStrip draws its own, which does not match Windows 11.
+        var open = new MenuItem("Open dashboard", delegate { OpenDashboard(); });
+        open.DefaultItem = true;
+        var menu = new ContextMenu(new[] { open, new MenuItem("Quit", delegate { Quit(); }) });
 
         icon = new NotifyIcon
         {
             Icon = new Icon(Path.Combine(Path.Combine(root, "assets"), "icon.ico"), SystemInformation.SmallIconSize),
             Text = AppName,
-            ContextMenuStrip = menu,
+            ContextMenu = menu,
         };
         icon.MouseClick += delegate(object sender, MouseEventArgs e)
         {
