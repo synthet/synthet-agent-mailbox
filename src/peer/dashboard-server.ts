@@ -16,8 +16,6 @@ export interface PeerDashboardOptions {
   home: string;
   port: number;
   bind: string;
-  /** Listen on 0.0.0.0 so Docker can publish the port. The host mapping stays on 127.0.0.1. */
-  container?: boolean;
 }
 
 export interface RunningPeerDashboard {
@@ -31,7 +29,7 @@ function loadPublic(home: string): PublicIdentity {
   return validatePublic({ name: raw.name, signing_key: raw.signing_key, encryption_key: raw.encryption_key });
 }
 
-/** Read the peer store without creating directories, so a read-only mount stays read-only. */
+/** Read the peer store without creating directories, so the dashboard never writes to it. */
 function readArea<T>(home: string, area: string): T[] {
   let names: string[];
   try { names = readdirSync(join(home, area)); }
@@ -56,9 +54,9 @@ interface JournalRead {
 }
 
 /**
- * Read journal.db without creating files next to it, so the Docker mount can stay read-only.
- * The journal runs in WAL mode, and SQLite cannot open a WAL database read-only from a read-only
- * directory (it needs the -shm file), so read a private copy of the database and its WAL instead.
+ * Read journal.db without creating files next to it.
+ * The journal runs in WAL mode, and even a read-only SQLite connection to a WAL database needs
+ * the -shm file, so read a private copy of the database and its WAL instead.
  */
 function readJournal(home: string): JournalRead | null {
   const path = join(home, "journal.db");
@@ -174,9 +172,8 @@ function snapshot(home: string) {
 }
 
 export async function startPeerDashboard(options: PeerDashboardOptions): Promise<RunningPeerDashboard> {
-  const containerBind = options.container === true && (options.bind === "0.0.0.0" || options.bind === "::");
-  if (!isLoopback(options.bind) && !containerBind) {
-    throw new Error("The dashboard listens on loopback only. In Docker, set DASHBOARD_CONTAINER=1 and DASHBOARD_BIND=0.0.0.0, and publish the host port on 127.0.0.1.");
+  if (!isLoopback(options.bind)) {
+    throw new Error("The dashboard listens on loopback only.");
   }
   const app = express();
   app.disable("x-powered-by");

@@ -10,7 +10,6 @@ if (isDirectRun(import.meta.url)) {
     home,
     port,
     bind,
-    container: process.env.DASHBOARD_CONTAINER === "1",
   })
     .then((dashboard) => {
       console.error(`peer dashboard ${dashboard.url}`);
