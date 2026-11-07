@@ -32,6 +32,14 @@ node dist/cli.js listen
 
 Use a different `--home` when two peers share one OS user. Only one process should bind TCP `47832`.
 
+## Windows tray app
+
+`run.bat` installs what is missing, builds, restarts the tray app, and exits. The app has no console or main window. It serves the dashboard at http://127.0.0.1:8788/dashboard, which reads this PC's `~/.agent-mail` store: `journal.db` when present, otherwise the JSON peer folders. It also receives mail unless something on this PC already holds TCP `47832`. In that case it leaves that receiver running, and **Quit** stops only the dashboard.
+
+Click the tray icon to open the dashboard. Right-click it and choose **Quit** to stop. Starting the app while it is running opens the dashboard. Logs are in `%LOCALAPPDATA%\Agent Mailbox\agent-mailbox.log`.
+
+To add a desktop shortcut and start the app at logon, run `scripts\install-shortcut.ps1` once. Turn off the logon start under **Startup apps** in Task Manager. Run `run.bat` again after changing code.
+
 ## Trust, then send
 
 On each PC, with the other one listening:
@@ -56,7 +64,7 @@ Message text from another PC is untrusted input. A receipt means the message was
 
 ## Point an agent at the peer
 
-Build first, then add one stdio server to each agent's user config, so every project sees it. Use an absolute path to `dist/cli.js`. This checkout has no project-level MCP config. Several agents on one PC share the store, so start each with `--no-listen` and run `listen` (or `run.bat`) once.
+Build first, then add one stdio server to each agent's user config, so every project sees it. Use an absolute path to `dist/cli.js`. This checkout has no project-level MCP config. Several agents on one PC share the store, so start each with `--no-listen` and run `listen` (or the [tray app](#windows-tray-app)) once.
 
 | Agent | User config |
 | --- | --- |
@@ -143,7 +151,7 @@ Tailscale discovery runs `tailscale status --json` and probes online peers at TC
 
 ## Legacy central mailbox
 
-`npm run legacy:init`, `npm run legacy:mailbox`, and `npm run adapter` still run the older shared mailbox and per-PC adapter. Docker Compose publishes the peer dashboard on `127.0.0.1:8788/dashboard`, reading this PC's `~/.agent-mail` store. When `journal.db` is present it shows that journal; otherwise it shows the JSON peer folders. `npm run test:legacy` covers the old path.
+`npm run legacy:init`, `npm run legacy:mailbox`, and `npm run adapter` still run the older shared mailbox and per-PC adapter. `npm run test:legacy` covers the old path.
 
 ## Tests
 
