@@ -4,6 +4,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -27,9 +28,14 @@ static class AgentMailTray
     static bool quitting;
     static int exitCode;
 
+    [DllImport("user32.dll")]
+    static extern bool SetProcessDPIAware();
+
     [STAThread]
     static int Main(string[] args)
     {
+        // Without this, Windows reports a 16px small icon and stretches it on scaled displays.
+        SetProcessDPIAware();
         if (args.Length == 1 && args[0] == "--quit")
         {
             using (var quit = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEventName)) quit.Set();
