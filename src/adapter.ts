@@ -48,8 +48,6 @@ export interface AdapterServerOptions {
   workspace?: string;
   wakeTimeoutMs: number;
   requestTimeoutMs: number;
-  /** Listen on 0.0.0.0 so Docker can publish the port. The host mapping stays on 127.0.0.1. */
-  container?: boolean;
   allowedOrigins?: Set<string>;
   onFatal?: (error: Error) => void;
 }
@@ -73,10 +71,9 @@ interface SendToolResult {
 }
 
 export async function startAdapter(options: AdapterServerOptions): Promise<RunningAdapter> {
-  const containerBind = options.container === true && (options.bind === "0.0.0.0" || options.bind === "::");
-  if (!isLoopback(options.bind) && !containerBind) {
+  if (!isLoopback(options.bind)) {
     throw new Error(
-      "The adapter listens on loopback only. Point your local MCP client at http://127.0.0.1:<port>/mcp on this PC. In Docker, set ADAPTER_CONTAINER=1 and ADAPTER_BIND=0.0.0.0, and publish the host port on 127.0.0.1.",
+      "The adapter listens on loopback only. Point your local MCP client at http://127.0.0.1:<port>/mcp on this PC.",
     );
   }
   mkdirSync(options.dataDir, { recursive: true });
@@ -654,7 +651,6 @@ export function adapterOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): Ada
     agentId,
     port: Number(env.ADAPTER_PORT ?? 8788),
     bind: env.ADAPTER_BIND ?? "127.0.0.1",
-    container: env.ADAPTER_CONTAINER === "1",
     dataDir: env.ADAPTER_DATA_DIR ?? "data/adapter",
     pollMs: Number(env.POLL_MS ?? 5000),
     wake,
