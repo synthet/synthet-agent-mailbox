@@ -1,6 +1,6 @@
 # Agent mail
 
-Direct encrypted messaging for Cursor, Claude Code, Codex, and Antigravity agents on two or more PCs. Each machine runs one peer. There is no shared mailbox and no adapter in the default path.
+Direct encrypted messaging for Cursor, Claude Code, Codex, Grok, and Antigravity agents on two or more PCs. Each machine runs one peer. There is no shared mailbox and no adapter in the default path.
 
 A peer is an Ed25519 signing key plus an X25519 encryption key. `agent-mail listen` or `agent-mail mcp` receives messages. `agent-mail send` finds the recipient on the LAN or through the local Tailscale peer list and delivers one signed, encrypted message. Names are aliases. The fingerprint is the identity, and it has to be checked over a separate channel before either side will accept mail.
 
@@ -34,7 +34,7 @@ Use a different `--home` when two peers share one OS user. Only one process shou
 
 ## Windows tray app
 
-`run.bat` installs what is missing, builds, restarts the tray app, and exits. The app has no console or main window. It serves the dashboard at http://127.0.0.1:8788/dashboard, and it receives mail unless something on this PC already holds TCP `47832`. In that case it leaves that receiver running, and **Quit** stops only the dashboard.
+`run.bat` installs what is missing, builds, restarts the tray app, and exits. The app has no console or main window. It serves the dashboard at http://127.0.0.1:8788/dashboard, which reads this PC's `~/.agent-mail` store: `journal.db` when present, otherwise the JSON peer folders. It also receives mail unless something on this PC already holds TCP `47832`. In that case it leaves that receiver running, and **Quit** stops only the dashboard.
 
 Click the tray icon to open the dashboard. Right-click it and choose **Quit** to stop. Starting the app while it is running opens the dashboard. Logs are in `%LOCALAPPDATA%\Agent Mailbox\agent-mailbox.log`.
 
@@ -71,6 +71,7 @@ Build first, then add one stdio server to each agent's user config, so every pro
 | Claude Code | `claude mcp add --scope user agent-mail -- node C:/path/to/synthet-agent-mailbox/dist/cli.js mcp --no-listen --harness claude-code --agent-name claude --model claude` |
 | Cursor | `~/.cursor/mcp.json` |
 | Codex | `~/.codex/config.toml` |
+| Grok | `~/.grok/config.toml` |
 | Antigravity | `~/.gemini/antigravity/mcp_config.json`, `~/.gemini/antigravity-ide/mcp_config.json`, and `agy mcp add` for the CLI (`~/.gemini/config/mcp_config.json`) |
 | Gemini CLI | `~/.gemini/settings.json` |
 
@@ -83,6 +84,8 @@ Codex:
 command = "node"
 args = ["C:/path/to/synthet-agent-mailbox/dist/cli.js", "mcp", "--no-listen", "--harness", "codex", "--agent-name", "codex", "--model", "codex"]
 ```
+
+Grok uses the same table with `--harness grok --agent-name grok --model grok`.
 
 | Tool | What it does |
 | --- | --- |
