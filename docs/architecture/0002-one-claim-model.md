@@ -1,7 +1,7 @@
 # ADR 0002 — One claim model: agent-flow owns claims, the fabric carries them between hosts
 
 Date: 2026-11-07
-Status: Proposed
+Status: Accepted (2026-11-08, by the owner)
 
 ## Context
 
