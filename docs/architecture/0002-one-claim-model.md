@@ -99,3 +99,4 @@ agent-flow:
 - Agents on a remote PC wait for the home host to be reachable before a claim is final. While it is
   offline, claims stay pending rather than racing.
 - The Jev policy entry for `mailbox_claim_task` stays valid: it is still a tool that changes claim state.
+- ADR 0003's `conversation_leases` are not claims. They record which session answers a thread, and never gate work ownership ([0003-wake-layer.md](0003-wake-layer.md)).
