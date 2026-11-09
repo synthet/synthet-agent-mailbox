@@ -8,7 +8,7 @@ import { fingerprint, initIdentity, loadIdentity, publicIdentity, validatePublic
 import { agentProfile } from "./peer/metadata.js";
 import { startPeerMcp } from "./peer/mcp.js";
 import { Peer } from "./peer/peer.js";
-import { SeenStore, unseenMessages } from "./peer/seen.js";
+import { hookInject, SeenStore, unseenMessages, type HookInput } from "./peer/seen.js";
 import type { Contact } from "./peer/store.js";
 import { startDaemon } from "./fabric/daemon.js";
 import { installHarness, inspectHarness, uninstallHarness } from "./fabric/harness.js";
@@ -44,6 +44,9 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
                                         (peer inbox, plus journal.db if present);
                                         --json includes bodies (cut at 4000 chars)
   digest --session ID --mark-seen KEY   Record shown messages (repeatable; KEY from --unseen)
+  hook inject --event NAME              Hook entry point (SessionStart|UserPromptSubmit|Stop):
+                                        reads the hook JSON on stdin, injects this session's
+                                        unseen mail as untrusted data, marks it seen; never fails
   sync FINGERPRINT --endpoint URL       Exchange granted events with a pinned peer
   harness install|inspect|uninstall     Project-local hook templates
        --target DIR --harness claude|codex|cursor|agy
@@ -69,7 +72,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     port: { type: "string" }, bind: { type: "string" }, interface: { type: "string" }, timeout: { type: "string" },
     "no-discovery": { type: "boolean" }, "no-listen": { type: "boolean" }, "no-tailscale": { type: "boolean" }, help: { type: "boolean", short: "h" },
     scope: { type: "string" }, audience: { type: "string" }, subject: { type: "string" }, target: { type: "string" },
-    unseen: { type: "boolean" }, json: { type: "boolean" }, "mark-seen": { type: "string", multiple: true },
+    unseen: { type: "boolean" }, json: { type: "boolean" }, "mark-seen": { type: "string", multiple: true }, event: { type: "string" },
   } });
   const [command, argument] = positionals;
   if (values.help || !command) { console.log(help); return; }
@@ -178,6 +181,22 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         try { output(journal.digest(values.session ?? "cli")); }
         finally { journal.close(); }
       } catch (error) { output({ ok: true, untrusted: true, messages: [], warning: error instanceof Error ? error.message : "unavailable" }); }
+      break;
+    }
+    case "hook": {
+      // A hook must never break the session: on any problem, print nothing and exit 0.
+      try {
+        if (argument !== "inject") throw new Error("Use: hook inject --event NAME");
+        let input: HookInput = {};
+        try { const raw = readFileSync(0, "utf8"); if (raw.trim()) input = JSON.parse(raw) as HookInput; }
+        catch { input = {}; }
+        const event = values.event ?? input.hook_event_name ?? "";
+        const journal = existsSync(join(home, "journal.db")) ? openJournal(home) : undefined;
+        try {
+          const response = hookInject(event, input, { peer, home, fallbackSession: values.harness ?? "hook", journal });
+          if (response) console.log(JSON.stringify(response));
+        } finally { journal?.close(); }
+      } catch (error) { console.error(`agent-mail hook: ${error instanceof Error ? error.message : String(error)}`); }
       break;
     }
     case "sync": {
