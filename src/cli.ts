@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -8,6 +8,7 @@ import { fingerprint, initIdentity, loadIdentity, publicIdentity, validatePublic
 import { agentProfile } from "./peer/metadata.js";
 import { startPeerMcp } from "./peer/mcp.js";
 import { Peer } from "./peer/peer.js";
+import { SeenStore, unseenMessages } from "./peer/seen.js";
 import type { Contact } from "./peer/store.js";
 import { startDaemon } from "./fabric/daemon.js";
 import { installHarness, inspectHarness, uninstallHarness } from "./fabric/harness.js";
@@ -39,6 +40,10 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
   publish --session ID --text TEXT      Publish a journal message
        [--audience direct|group|broadcast|topic] [--scope ID]
   digest [--session ID]                 Print a short untrusted inbox digest
+  digest --session ID --unseen [--json] Unacked mail this session hasn't been shown
+                                        (peer inbox, plus journal.db if present);
+                                        --json includes bodies (cut at 4000 chars)
+  digest --session ID --mark-seen KEY   Record shown messages (repeatable; KEY from --unseen)
   sync FINGERPRINT --endpoint URL       Exchange granted events with a pinned peer
   harness install|inspect|uninstall     Project-local hook templates
        --target DIR --harness claude|codex|cursor|agy
@@ -64,6 +69,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     port: { type: "string" }, bind: { type: "string" }, interface: { type: "string" }, timeout: { type: "string" },
     "no-discovery": { type: "boolean" }, "no-listen": { type: "boolean" }, "no-tailscale": { type: "boolean" }, help: { type: "boolean", short: "h" },
     scope: { type: "string" }, audience: { type: "string" }, subject: { type: "string" }, target: { type: "string" },
+    unseen: { type: "boolean" }, json: { type: "boolean" }, "mark-seen": { type: "string", multiple: true },
   } });
   const [command, argument] = positionals;
   if (values.help || !command) { console.log(help); return; }
@@ -157,6 +163,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       break;
     }
     case "digest": {
+      if (values.unseen || values["mark-seen"]) {
+        const session = required(values.session ?? process.env.AGENT_MAIL_SESSION, "--session");
+        const seen = new SeenStore(home, session);
+        if (values["mark-seen"]) { output({ ok: true, marked: seen.mark(values["mark-seen"]) }); break; }
+        // Only read an existing journal: creating journal.db would switch the dashboard to journal view (#16).
+        const journal = existsSync(join(home, "journal.db")) ? openJournal(home) : undefined;
+        try { output({ ok: true, untrusted: true, session, messages: unseenMessages(peer, seen, { journal, session, bodies: !!values.json }) }); }
+        finally { journal?.close(); }
+        break;
+      }
       try {
         const journal = openJournal(home);
         try { output(journal.digest(values.session ?? "cli")); }
