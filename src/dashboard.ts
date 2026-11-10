@@ -87,6 +87,13 @@ export const dashboardHtml = `<!doctype html>
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .version {
+    font-size: 12px;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
   .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-text-muted); flex-shrink: 0; }
   .live-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--color-success); }
   .live-dot.is-paused { background: var(--color-warning); }
@@ -337,6 +344,7 @@ export const dashboardHtml = `<!doctype html>
   </nav>
   <div class="shell-right">
     <span id="headline" class="headline"></span>
+    <span id="version" class="version"></span>
     <span class="live" title="Refreshes every 5 seconds">
       <span class="live-dot" id="live-dot" aria-hidden="true"></span>
       <span id="live-label">Live</span>
@@ -489,6 +497,9 @@ export const dashboardHtml = `<!doctype html>
       $('route').textContent = 'via ' + d.mailbox.url + (others > 0 ? ' (+' + others + ' fallback)' : '');
     }
     $('stamp').textContent = 'Updated ' + new Date(d.generated_at).toLocaleTimeString();
+    var v = d.version;
+    $('version').textContent = v ? 'v' + v.app + (v.commit ? ' · ' + v.commit : '') : '';
+    $('version').title = v && v.built ? 'Built ' + new Date(v.built).toLocaleString() : '';
     var receivedN = (d.recent || []).length;
     $('headline').textContent = d.agent.id + (receivedN ? ' · ' + receivedN + (peer ? ' messages' : ' received') : '') + (d.outbox && d.outbox.length ? ' · ' + d.outbox.length + ' waiting' : '');
     syncLive(false);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { request } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -53,6 +53,10 @@ test("dashboard serves journal mail at /dashboard", async (t) => {
   assert.equal(api.status, 200);
   const body = JSON.parse(api.body);
   assert.equal(body.journal, true);
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(body.version.app, pkg.version);
+  assert.ok(body.version.commit === null || /^[0-9a-f]{7}$/.test(body.version.commit));
+  assert.match(page.body, /id="version"/);
   assert.equal(body.recent.some((row) => row.message.body.text === "review the schema"), true);
   assert.equal(body.remote.tasks.offered, 1);
   assert.equal(body.agents.agents.some((agent) => agent.id.includes("Builder")), true);
