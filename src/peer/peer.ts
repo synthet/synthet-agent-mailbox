@@ -122,7 +122,14 @@ export class Peer {
           verifyReceipt(contact.identity, JSON.parse(Buffer.concat(chunks).toString()), message);
           this.store.put("sent", message.id, message, true);
           this.store.remove("outbox", message.id);
-          return { status: "delivered", message_id: message.id, conversation_id: message.conversation_id };
+          const delivered = { status: "delivered", message_id: message.id, conversation_id: message.conversation_id };
+          // The receipt is signed by the already-pinned key, so this address now verifiably reaches that
+          // peer. Save it so later sends and retries work when discovery doesn't find the peer.
+          if (endpoint !== contact.endpoint) {
+            this.store.trust(contact.identity, fingerprint(contact.identity), endpoint);
+            return { ...delivered, endpoint_changed: { from: contact.endpoint ?? null, to: endpoint } };
+          }
+          return delivered;
         } catch (error) { failure = error; }
       }
       throw failure;
