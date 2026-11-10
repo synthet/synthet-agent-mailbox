@@ -39,6 +39,7 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
   mcp                                   Stdio MCP + peer receiver
   daemon                                Host journal and peer receiver
   register --session ID                 Register this session on the journal
+       [--harness-session ID] [--display-name NAME] [--workspace DIR]
   publish --session ID --text TEXT      Publish a journal message
        [--audience direct|group|broadcast|topic] [--scope ID]
   digest [--session ID]                 Print a short untrusted inbox digest
@@ -94,6 +95,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     scope: { type: "string" }, audience: { type: "string" }, subject: { type: "string" }, target: { type: "string" },
     unseen: { type: "boolean" }, json: { type: "boolean" }, "mark-seen": { type: "string", multiple: true }, event: { type: "string" },
     once: { type: "boolean" }, backlog: { type: "boolean" }, interval: { type: "string" },
+    "harness-session": { type: "string" }, "display-name": { type: "string" }, workspace: { type: "string" },
   } });
   const [command, argument] = positionals;
   if (values.help || !command) { console.log(help); return; }
@@ -170,7 +172,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case "register": {
       const journal = openJournal(home, true);
-      try { output(journal.registerSession({ session_id: required(values.session, "--session"), alias: values["agent-name"], harness: values.harness, model: values.model })); }
+      try { output(journal.registerSession({ session_id: required(values.session, "--session"), alias: values["agent-name"], harness: values.harness, model: values.model,
+        harness_session_id: values["harness-session"], display_name: values["display-name"], workspace: values.workspace })); }
       finally { journal.close(); }
       break;
     }
