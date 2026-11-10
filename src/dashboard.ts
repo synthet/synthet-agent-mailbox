@@ -483,7 +483,7 @@ export const dashboardHtml = `<!doctype html>
     var peer = d.mode === 'peer';
     statusRow($('who'), d.agent.id, 'ok');
     if (peer) {
-      $('label-tasks').textContent = d.journal ? 'Tasks' : 'Sent';
+      $('label-tasks').textContent = d.journal ? 'Sent · journal tasks' : 'Sent';
       $('label-local').textContent = 'Outbox';
       statusRow($('conn'), d.mailbox.connected ? (d.journal ? 'journal' : 'peer store') : 'peer store missing', d.mailbox.connected ? 'ok' : 'bad');
       statusRow($('wake'), 'direct', 'ok');
@@ -510,8 +510,14 @@ export const dashboardHtml = `<!doctype html>
     clear(err);
     problems.forEach(function (p) { err.appendChild(el('div', p)); });
 
-    counts($('inbox'), d.remote && d.remote.inbox, ['dead', 'expired']);
-    counts($('tasks'), d.remote && d.remote.tasks, ['failed']);
+    // Peer counts stay; journal counts are added beside them with a "journal" prefix (#16).
+    var journalCounts = d.remote && d.remote.journal;
+    var inboxCounts = d.remote && d.remote.inbox ? Object.assign({}, d.remote.inbox) : null;
+    var taskCounts = d.remote && d.remote.tasks ? Object.assign({}, d.remote.tasks) : null;
+    if (journalCounts && inboxCounts) inboxCounts.journal_messages = journalCounts.messages;
+    if (journalCounts && taskCounts) Object.keys(journalCounts.tasks || {}).forEach(function (k) { taskCounts['journal_' + k] = journalCounts.tasks[k]; });
+    counts($('inbox'), inboxCounts, ['dead', 'expired']);
+    counts($('tasks'), taskCounts, ['failed', 'journal_failed']);
     counts($('local'), d.local, ['rejected', 'needs_attention']);
 
     var agents = $('agents'); clear(agents);
@@ -520,7 +526,7 @@ export const dashboardHtml = `<!doctype html>
     list.forEach(function (a) {
       var row = el('div', null, 'side-link' + (a.id === d.agent.id ? ' is-self' : ''));
       row.appendChild(el('span', null, 'side-dot'));
-      row.appendChild(el('span', a.id + (a.id === d.agent.id ? ' · this PC' : '')));
+      row.appendChild(el('span', a.id + (a.id === d.agent.id ? ' · this PC' : '') + (a.source === 'journal' ? ' · journal' : '')));
       agents.appendChild(row);
     });
 
@@ -533,7 +539,7 @@ export const dashboardHtml = `<!doctype html>
       d.recent.forEach(function (r) {
         var m = r.message;
         var text = messageText(m.body);
-        card(recent, new Date(m.created_at).toLocaleTimeString(), m.sender, kindFor(r.status), r.status, text, m.type + (m.task_id ? ' · task' : '') + ' · ' + m.conversation_id);
+        card(recent, new Date(m.created_at).toLocaleTimeString(), m.sender, kindFor(r.status), r.status, text, (r.source ? r.source + ' · ' : '') + m.type + (m.task_id ? ' · task' : '') + ' · ' + m.conversation_id);
       });
     }
 
