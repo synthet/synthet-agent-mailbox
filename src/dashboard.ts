@@ -397,6 +397,8 @@ export const dashboardHtml = `<!doctype html>
   var paused = false;
   var filter = 'received';
   var timer = null;
+  // Keys of cards whose details the user expanded. Refresh rebuilds every card, so this keeps them open.
+  var openCards = {};
   var $ = function (id) { return document.getElementById(id); };
 
   function el(tag, text, cls) {
@@ -446,7 +448,7 @@ export const dashboardHtml = `<!doctype html>
     if (!body) return '';
     return typeof body === 'string' ? body : (body.text || '');
   }
-  function card(parent, idText, title, kind, status, desc, foot) {
+  function card(parent, key, idText, title, kind, status, desc, foot) {
     var box = el('article', null, 'run-card');
     var head = el('div', null, 'run-card-head');
     var titles = el('div', null, 'run-card-title');
@@ -457,6 +459,8 @@ export const dashboardHtml = `<!doctype html>
     box.appendChild(head);
     if (desc) {
       var details = el('details', null, 'run-desc');
+      if (openCards[key]) details.open = true;
+      details.addEventListener('toggle', function () { if (details.open) openCards[key] = true; else delete openCards[key]; });
       details.appendChild(el('summary', desc.length > 140 ? desc.slice(0, 140) + '...' : desc));
       if (desc.length > 140) details.appendChild(el('div', desc));
       box.appendChild(details);
@@ -539,7 +543,7 @@ export const dashboardHtml = `<!doctype html>
       d.recent.forEach(function (r) {
         var m = r.message;
         var text = messageText(m.body);
-        card(recent, new Date(m.created_at).toLocaleTimeString(), m.sender, kindFor(r.status), r.status, text, (r.source ? r.source + ' · ' : '') + m.type + (m.task_id ? ' · task' : '') + ' · ' + m.conversation_id);
+        card(recent, ['r', r.source, m.sender, m.created_at, m.conversation_id].join('|'), new Date(m.created_at).toLocaleTimeString(), m.sender, kindFor(r.status), r.status, text, (r.source ? r.source + ' · ' : '') + m.type + (m.task_id ? ' · task' : '') + ' · ' + m.conversation_id);
       });
     }
 
@@ -548,7 +552,7 @@ export const dashboardHtml = `<!doctype html>
     else {
       clear(outbox);
       d.outbox.forEach(function (o) {
-        card(outbox, new Date(o.created_at).toLocaleTimeString(), o.recipient, kindFor(o.status), o.status, o.last_error || '', o.type + ' · ' + o.attempts + ' tries');
+        card(outbox, ['o', o.recipient, o.created_at, o.type].join('|'), new Date(o.created_at).toLocaleTimeString(), o.recipient, kindFor(o.status), o.status, o.last_error || '', o.type + ' · ' + o.attempts + ' tries');
       });
     }
 
