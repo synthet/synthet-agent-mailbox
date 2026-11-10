@@ -1,0 +1,7 @@
+[
+  {
+    "name": "agent-mail-watch",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/monitor.mjs\"",
+    "description": "agent-mail: one line per new message (sender, thread and id only, never the body)"
+  }
+]

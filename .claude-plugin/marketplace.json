@@ -1,0 +1,14 @@
+{
+  "name": "synthet-agent-mailbox",
+  "description": "agent-mail for Claude Code: wake idle sessions on new peer mail, inject unseen mail as untrusted data, gate and log sends.",
+  "owner": {
+    "name": "synthet"
+  },
+  "plugins": [
+    {
+      "name": "agent-mail",
+      "source": "./plugin",
+      "description": "Monitor that wakes the session on new agent-mail, inject/gate/ledger hooks, the agent-mail MCP server and a handling skill."
+    }
+  ]
+}
