@@ -42,9 +42,12 @@ export function createPeerMcp(peer: Peer): McpServer {
     try { return journal ??= new Journal(peer.store.dir, peer.identity); }
     catch (error) { throw journalLoadError(error); }
   };
-  server.tool("mailbox_register_session", "Register a logical agent session. The alias is not the harness or model name.", {
+  server.tool("mailbox_register_session", "Register a logical agent session. The alias is not the harness or model name. Optionally record how to reach it: harness_session_id (the harness's own session, thread, chat or conversation id), display_name (for example the claude --name value) and workspace (its working directory).", {
     session_id: z.string().min(1).max(200), alias: z.string().min(1).max(80).optional(), harness: z.string().max(80).optional(), model: z.string().max(120).optional(),
+    harness_session_id: z.string().max(200).optional(), display_name: z.string().max(80).optional(), workspace: z.string().max(400).optional(),
   }, (args) => wrap(() => useJournal(true).registerSession(args)));
+  server.tool("mailbox_list_sessions", "List live sessions on this PC: alias, harness, model, harness_session_id, display_name, workspace, last heartbeat, and the conversations each one holds a lease on. Contains no message bodies.", {},
+    () => wrap(() => useJournal().sessionDirectory()));
   server.tool("mailbox_session_heartbeat", "Mark a registered session alive and renew its conversation leases. A session counts as live for 10 minutes after its last heartbeat; send one about every 5 minutes.", {
     session_id: z.string().min(1).max(200),
   }, (args) => wrap(() => useJournal().heartbeat(args.session_id)));
