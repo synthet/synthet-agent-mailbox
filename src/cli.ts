@@ -9,6 +9,7 @@ import { agentProfile } from "./peer/metadata.js";
 import { startPeerMcp } from "./peer/mcp.js";
 import { Peer } from "./peer/peer.js";
 import { hookInject, SeenStore, unseenMessages, type HookInput } from "./peer/seen.js";
+import { watchPoll } from "./peer/watch.js";
 import { gateHook, initPolicy, ledgerHook, loadPolicy, policyPath, type ToolHookInput } from "./peer/policy.js";
 import type { Contact } from "./peer/store.js";
 import { startDaemon } from "./fabric/daemon.js";
@@ -47,11 +48,22 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
   digest --session ID --mark-seen KEY   Record shown messages (repeatable; KEY from --unseen)
   hook inject --event NAME              Hook entry point (SessionStart|UserPromptSubmit|Stop):
                                         reads the hook JSON on stdin, injects this session's
-                                        unseen mail as untrusted data, marks it seen; never fails
+                                        unseen mail as untrusted data, marks it seen; never fails.
+                                        Seen is not read: digest and inbox still list it until ack
   hook gate                             PreToolUse send gate for send_message/mailbox_publish:
                                         denies secrets, unlisted peers, oversize; fails closed
   hook ledger                           PostToolUse: append metadata + sha256 to ledger.jsonl
   policy init|check                     Write a deny-all policy.json / validate it
+  session heartbeat|end|list [--session ID]
+                                        Keep a journal session live (10 min TTL), end it
+                                        (releases its leases), or list live sessions
+  lease claim|release|show --conversation ID [--session ID]
+                                        30 min conversation lease: one session answers a thread.
+                                        Not a task claim (agent-flow owns those)
+  watch --session ID [--once] [--backlog] [--interval MS]
+                                        One JSON line per new message for this session: ids,
+                                        thread and sender only, never bodies. Starts from now
+                                        unless --backlog; keeps the journal session live
   sync FINGERPRINT --endpoint URL       Exchange granted events with a pinned peer
   harness install|inspect|uninstall     Project-local hook templates
        --target DIR --harness claude|codex|cursor|agy
@@ -78,6 +90,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "no-discovery": { type: "boolean" }, "no-listen": { type: "boolean" }, "no-tailscale": { type: "boolean" }, help: { type: "boolean", short: "h" },
     scope: { type: "string" }, audience: { type: "string" }, subject: { type: "string" }, target: { type: "string" },
     unseen: { type: "boolean" }, json: { type: "boolean" }, "mark-seen": { type: "string", multiple: true }, event: { type: "string" },
+    once: { type: "boolean" }, backlog: { type: "boolean" }, interval: { type: "string" },
   } });
   const [command, argument] = positionals;
   if (values.help || !command) { console.log(help); return; }
@@ -156,6 +169,57 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       const journal = openJournal(home);
       try { output(journal.registerSession({ session_id: required(values.session, "--session"), alias: values["agent-name"], harness: values.harness, model: values.model })); }
       finally { journal.close(); }
+      break;
+    }
+    case "session": {
+      const journal = openJournal(home);
+      try {
+        if (argument === "list") output(journal.liveSessions());
+        else if (argument === "heartbeat") output(journal.heartbeat(required(values.session, "--session")));
+        else if (argument === "end") output(journal.endSession(required(values.session, "--session")));
+        else throw new Error("Use session heartbeat|end|list");
+      } finally { journal.close(); }
+      break;
+    }
+    case "lease": {
+      const journal = openJournal(home);
+      try {
+        const conversation = required(values.conversation, "--conversation");
+        if (argument === "show") output({ lease: journal.conversationLease(conversation) });
+        else if (argument === "claim") {
+          const result = journal.claimConversation(required(values.session, "--session"), conversation);
+          output(result);
+          if (result.status === "lease_conflict") process.exitCode = 2;
+        } else if (argument === "release") output(journal.releaseConversation(required(values.session, "--session"), conversation));
+        else throw new Error("Use lease claim|release|show");
+      } finally { journal.close(); }
+      break;
+    }
+    case "watch": {
+      const session = required(values.session ?? process.env.AGENT_MAIL_SESSION, "--session");
+      const interval = Math.max(500, Number(values.interval ?? 2000) || 2000);
+      // Open journal.db only once it exists: creating it would switch the dashboard to journal view (#16).
+      let journal: Journal | undefined;
+      let lastBeat = 0;
+      const poll = () => {
+        if (!journal && existsSync(join(home, "journal.db"))) journal = openJournal(home);
+        for (const line of watchPoll(peer, home, session, journal, { backlog: !!values.backlog })) console.log(JSON.stringify(line));
+        // Liveness goes to the journal, not stdout: under a Claude monitor every stdout line wakes the model.
+        if (journal && Date.now() - lastBeat >= 5 * 60_000) {
+          lastBeat = Date.now();
+          try { journal.heartbeat(session); } catch { /* an unregistered session has nothing to keep alive */ }
+        }
+      };
+      poll();
+      if (values.once) { journal?.close(); break; }
+      await new Promise<void>((resolve) => {
+        const timer = setInterval(() => {
+          try { poll(); } catch (error) { console.error(`[agent-mail] watch: ${error instanceof Error ? error.message : String(error)}`); }
+        }, interval);
+        const stop = () => { clearInterval(timer); journal?.close(); resolve(); };
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+      });
       break;
     }
     case "publish": {

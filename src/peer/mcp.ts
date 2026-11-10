@@ -38,6 +38,18 @@ export function createPeerMcp(peer: Peer): McpServer {
   server.tool("mailbox_register_session", "Register a logical agent session. The alias is not the harness or model name.", {
     session_id: z.string().min(1).max(200), alias: z.string().min(1).max(80).optional(), harness: z.string().max(80).optional(), model: z.string().max(120).optional(),
   }, (args) => wrap(() => useJournal().registerSession(args)));
+  server.tool("mailbox_session_heartbeat", "Mark a registered session alive and renew its conversation leases. A session counts as live for 10 minutes after its last heartbeat; send one about every 5 minutes.", {
+    session_id: z.string().min(1).max(200),
+  }, (args) => wrap(() => useJournal().heartbeat(args.session_id)));
+  server.tool("mailbox_session_end", "End a session: it stops counting as live and its conversation leases are released.", {
+    session_id: z.string().min(1).max(200),
+  }, (args) => wrap(() => useJournal().endSession(args.session_id)));
+  server.tool("mailbox_lease_conversation", "Take or renew a 30-minute lease on a conversation so only this session answers it. Another session's lease returns lease_conflict. This is not a task claim; agent-flow owns task claims.", {
+    session_id: z.string().min(1).max(200), conversation_id: z.string().min(1).max(80),
+  }, (args) => wrap(() => useJournal().claimConversation(args.session_id, args.conversation_id)));
+  server.tool("mailbox_release_conversation", "Release this session's lease on a conversation.", {
+    session_id: z.string().min(1).max(200), conversation_id: z.string().min(1).max(80),
+  }, (args) => wrap(() => useJournal().releaseConversation(args.session_id, args.conversation_id)));
   server.tool("mailbox_subscribe", "Join a group or broadcast scope with a registered session. Group and broadcast messages reach only sessions subscribed to their scope_id when the message is published.", {
     session_id: z.string().min(1).max(200), scope_id: z.string().min(1).max(80),
   }, (args) => wrap(() => useJournal().subscribe(args.session_id, args.scope_id)));
