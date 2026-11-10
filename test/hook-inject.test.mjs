@@ -94,11 +94,18 @@ test("harness install wires inject hooks for claude and codex, and uninstall rem
   const claude = JSON.parse(readFileSync(join(dir, ".claude/agent-mailbox.hooks.json"), "utf8")).hooks;
   const codex = JSON.parse(readFileSync(join(dir, ".codex/hooks.json"), "utf8")).hooks;
   for (const hooks of [claude, codex]) {
-    for (const event of ["SessionStart", "UserPromptSubmit", "Stop"]) assert.match(hooks[event][0].command, new RegExp(`hook inject --event ${event}`));
-    assert.match(hooks.PostToolUse[0].command, /digest --session/, "other events keep the digest");
+    for (const groups of Object.values(hooks)) {
+      // Settings shape: event -> matcher groups -> { hooks: [{ type, command, timeout }] } (#19).
+      assert.ok(Array.isArray(groups) && groups.length === 1);
+      assert.deepEqual(Object.keys(groups[0]), ["hooks"]);
+      assert.equal(groups[0].hooks[0].type, "command");
+      assert.equal(groups[0].hooks[0].timeout, 10);
+    }
+    for (const event of ["SessionStart", "UserPromptSubmit", "Stop"]) assert.match(hooks[event][0].hooks[0].command, new RegExp(`hook inject --event ${event}`));
+    assert.match(hooks.PostToolUse[0].hooks[0].command, /digest --session/, "other events keep the digest");
   }
-  assert.match(claude.UserPromptSubmit[0].command, /--harness claude/);
-  assert.match(codex.UserPromptSubmit[0].command, /--harness codex/);
+  assert.match(claude.UserPromptSubmit[0].hooks[0].command, /--harness claude/);
+  assert.match(codex.UserPromptSubmit[0].hooks[0].command, /--harness codex/);
   assert.ok(inspectHarness(dir).files.includes(".codex/hooks.json"));
   const { removed } = uninstallHarness(dir);
   assert.ok(removed.includes(".claude/agent-mailbox.hooks.json") && removed.includes(".codex/hooks.json"));
