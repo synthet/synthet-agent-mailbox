@@ -11,16 +11,16 @@ import { startPeerDashboard } from "../dist/peer/dashboard-server.js";
 import { PeerStore } from "../dist/peer/store.js";
 import { signMessage } from "../dist/peer/wire.js";
 
-/** Put one signed peer message from Zephyr into dir's inbox, and pin Zephyr as a contact. */
+/** Put one signed peer message from Beta into dir's inbox, and pin Beta as a contact. */
 function peerMail(dir, identity, text) {
-  const zephyrDir = mkdtempSync(join(tmpdir(), "peer-dashboard-zephyr-"));
-  const zephyr = initIdentity(zephyrDir, "Zephyr");
-  rmSync(zephyrDir, { recursive: true, force: true });
+  const betaDir = mkdtempSync(join(tmpdir(), "peer-dashboard-beta-"));
+  const beta = initIdentity(betaDir, "Beta");
+  rmSync(betaDir, { recursive: true, force: true });
   const store = new PeerStore(dir);
-  store.trust(publicIdentity(zephyr), fingerprint(zephyr));
-  const message = signMessage(zephyr, {
-    id: randomUUID(), conversation_id: randomUUID(), sender: fingerprint(zephyr), recipient: fingerprint(identity), text, created_at: Date.now() - 60_000,
-    origin: { hostname: "zephyr", platform: "test", arch: "x64", addresses: ["192.0.2.20"] },
+  store.trust(publicIdentity(beta), fingerprint(beta));
+  const message = signMessage(beta, {
+    id: randomUUID(), conversation_id: randomUUID(), sender: fingerprint(beta), recipient: fingerprint(identity), text, created_at: Date.now() - 60_000,
+    origin: { hostname: "beta", platform: "test", arch: "x64", addresses: ["192.0.2.20"] },
   });
   store.put("inbox", message.sender + ":" + message.id, message);
   return message;
@@ -99,14 +99,14 @@ test("dashboard serves journal mail at /dashboard", async (t) => {
 test("dashboard without a journal shows peer mail, tagged peer", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "peer-dashboard-"));
   const identity = initIdentity(dir, "Desktop");
-  peerMail(dir, identity, "hello from zephyr");
+  peerMail(dir, identity, "hello from beta");
   const { body } = await api(dir, t);
   assert.equal(body.journal, false);
   assert.deepEqual(body.remote, { inbox: { unread: 1, stored: 1 }, tasks: { delivered: 0 } });
   assert.equal(body.recent.length, 1);
   assert.equal(body.recent[0].source, "peer");
-  assert.equal(body.recent[0].message.body.text, "hello from zephyr");
-  assert.deepEqual(body.agents.agents.map((a) => [a.id, a.source]), [["Desktop", "peer"], ["Zephyr", "peer"]]);
+  assert.equal(body.recent[0].message.body.text, "hello from beta");
+  assert.deepEqual(body.agents.agents.map((a) => [a.id, a.source]), [["Desktop", "peer"], ["Beta", "peer"]]);
   assert.equal(existsSync(join(dir, "journal.db")), false, "reading the dashboard never creates journal.db");
 });
 
@@ -125,8 +125,8 @@ test("a journal adds to peer mail instead of hiding it (#16)", async (t) => {
   const texts = Object.fromEntries(body.recent.map((row) => [row.message.body.text, row.source]));
   assert.deepEqual(texts, { "peer message": "peer", "journal message": "journal" });
   assert.equal(body.recent[0].source, "journal", "newest first across both stores");
-  assert.ok(body.agents.agents.some((a) => a.id === "Zephyr" && a.source === "peer"));
+  assert.ok(body.agents.agents.some((a) => a.id === "Beta" && a.source === "peer"));
   assert.ok(body.agents.agents.some((a) => a.id.includes("Builder") && a.source === "journal"));
-  assert.match(body.log, / peer from Zephyr peer message/);
+  assert.match(body.log, / peer from Beta peer message/);
   assert.match(body.log, / journal direct /);
 });

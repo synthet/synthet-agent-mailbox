@@ -1,12 +1,12 @@
 # ADR 0003 — Wake layer: deliver mail to the session that should answer it
 
 Date: 2026-11-09
-Status: Accepted (2026-11-09, owner). TridentX drafted it; Zephyr reviewed it in #11.
+Status: Accepted (2026-11-09, owner). PC-A drafted it; PC-B reviewed it in #11.
 
 ## Context
 
 Peer mail is stored reliably, but nothing tells a model session that mail arrived. Three problems
-showed up in daily two-PC use (TridentX and Zephyr, both Windows):
+showed up in daily two-PC use (PC-A and PC-B, both Windows):
 
 - **Replies wait until someone polls.** An answer can sit in the inbox for hours, because an idle
   Claude Code or Codex session never looks. `mailbox_poll` and `digest` are reads, not wakes.
@@ -25,7 +25,7 @@ Inputs:
 - The peer-delivery-agent drafts in #9 (`docs/peer-delivery-agent-spec.md`, `-plan.md`). Both are
   drafts, not approved. Their spike: a restricted `claude -p` sent a fixed SendMessage notice that
   woke an idle background session in 14 s and an idle terminal session in 27 s.
-- The TridentX–Zephyr design thread of 2026-11-09. The owner decided Q1 and Q5. Q3, Q4 and Q6 were
+- The PC-A–PC-B design thread of 2026-11-09. The owner decided Q1 and Q5. Q3, Q4 and Q6 were
   decided through Jev. The probabilities are quoted below and are advisory.
 
 ## Decision
@@ -78,7 +78,7 @@ trust: pinning stays human-only through `agent-mail trust`.
      stripped.
    - Confirm hook matchers against the scoped MCP tool names with a dry-run PreToolUse logger before
      relying on them.
-7. **Split (owner).** TridentX implements. Zephyr reviews each PR and runs the Zephyr-side checks.
+7. **Split (owner).** PC-A implements. PC-B reviews each PR and runs the PC-B-side checks.
    Every merge is the owner's.
 
 ## Phases
@@ -120,8 +120,7 @@ Each phase is one or two PRs. Their issues are opened from this ADR once it is a
 
 ## Not doing (now)
 
-- **Re-pinning peers to Tailscale MagicDNS names.** Zephyr has no Tailscale, and both PCs are on the
-  LAN only. Endpoint auto-refresh is the fix for stale addresses.
+- **Re-pinning peers to Tailscale MagicDNS names.** Not every PC runs Tailscale. Endpoint auto-refresh is the fix for stale addresses.
 - **Claude channels.** They are a research preview and need a development flag on every launch.
   Revisit when they are stable.
 - **Per-session signing sub-keys.** Session tags under the host key are enough for a single owner.
@@ -140,9 +139,8 @@ Each phase is one or two PRs. Their issues are opened from this ADR once it is a
 
 ## Prerequisites outside this repo
 
-- **Codex CLI 0.166 or later on both PCs** for `codex queue --resume`. TridentX runs 0.167.0
-  (upgraded from 0.160.0 on 2026-11-09; `codex --version` confirms it). Zephyr runs 0.161.0.
-- **Rebuild and restart:** Zephyr's running `dist/` predates `378d2e8`, so rebuild and restart its
+- **Codex CLI 0.166 or later on both PCs** for `codex queue --resume`.
+- **Rebuild and restart:** Any PC whose running `dist/` predates `378d2e8` must rebuild and restart its
   listener, tray and MCP servers before the Phase 1 two-PC checks.
 
 ## Consequences

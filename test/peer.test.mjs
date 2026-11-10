@@ -20,7 +20,7 @@ function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), "agent-mail-test-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const a = initIdentity(join(dir, "a"), "Desktop");
-  const b = initIdentity(join(dir, "b"), "Zephyr");
+  const b = initIdentity(join(dir, "b"), "Beta");
   return { dir, a, b };
 }
 function message(a, b, text = "private message") {
@@ -50,12 +50,12 @@ test("identity persistence, explicit fingerprint trust, revocation and ambiguous
   const store = new PeerStore(join(dir, "a"));
   assert.throws(() => store.trust(publicIdentity(b), "0".repeat(64)), /mismatch/);
   store.trust(publicIdentity(b), fingerprint(b));
-  assert.equal(store.contact("zephyr").identity.signing_key, b.signing_key);
-  const impostor = initIdentity(join(dir, "impostor"), "Zephyr");
+  assert.equal(store.contact("beta").identity.signing_key, b.signing_key);
+  const impostor = initIdentity(join(dir, "impostor"), "Beta");
   store.trust(publicIdentity(impostor), fingerprint(impostor));
-  assert.throws(() => store.contact("Zephyr"), /Ambiguous/);
+  assert.throws(() => store.contact("Beta"), /Ambiguous/);
   store.remove("contacts", fingerprint(impostor));
-  assert.equal(store.contact("Zephyr").identity.signing_key, b.signing_key);
+  assert.equal(store.contact("Beta").identity.signing_key, b.signing_key);
   assert.throws(() => store.trust(publicIdentity(b), fingerprint(b), "http://user:pass@localhost/path"));
 });
 
@@ -94,12 +94,12 @@ test("direct delivery, restart-safe inbox, idempotency, signed discovery probe, 
   const discovered = await probeIdentity("127.0.0.1", listener.port);
   assert.equal(discovered.fingerprint, fingerprint(b));
   const id = randomUUID();
-  const sent = await alice.send({ recipient: "Zephyr", text: "Hello 🔐\nsecond line", message_id: id });
+  const sent = await alice.send({ recipient: "Beta", text: "Hello 🔐\nsecond line", message_id: id });
   assert.equal(sent.status, "delivered");
   assert.equal(bob.inbox().length, 1);
-  assert.equal((await alice.send({ recipient: "Zephyr", text: "Hello 🔐\nsecond line", message_id: id })).status, "delivered");
+  assert.equal((await alice.send({ recipient: "Beta", text: "Hello 🔐\nsecond line", message_id: id })).status, "delivered");
   assert.equal(bob.inbox().length, 1);
-  await assert.rejects(() => alice.send({ recipient: "Zephyr", text: "changed", message_id: id }), /different/);
+  await assert.rejects(() => alice.send({ recipient: "Beta", text: "changed", message_id: id }), /different/);
   const received = bob.inbox()[0];
   assert.equal(received.origin.hostname, hostname());
   assert.equal(verifyMessage(a, received), true);
@@ -119,7 +119,7 @@ test("direct delivery, restart-safe inbox, idempotency, signed discovery probe, 
   assert.equal(bob.inbox().length, 0);
   assert.equal(bob.thread(received.conversation_id).length, 1);
   await listener.close(); active = false;
-  const queued = await alice.send({ recipient: "Zephyr", text: "offline" });
+  const queued = await alice.send({ recipient: "Beta", text: "offline" });
   assert.equal(queued.status, "queued");
   assert.equal(alice.status().pending, 1);
   listener = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false }); active = true;
@@ -129,7 +129,7 @@ test("direct delivery, restart-safe inbox, idempotency, signed discovery probe, 
   assert.equal(alice.status().pending, 0);
   assert.equal(bob.inbox()[0].text, "offline");
   bob.store.remove("contacts", fingerprint(a));
-  assert.equal((await alice.send({ recipient: "Zephyr", text: "revoked" })).status, "queued");
+  assert.equal((await alice.send({ recipient: "Beta", text: "revoked" })).status, "queued");
   assert.equal(bob.inbox().length, 1);
 });
 
@@ -201,21 +201,21 @@ test("routing fields are sent only to a peer whose /capabilities accepts agent-m
   const routing = { to_session: "codex-7", hop: 1, auto_reply: true, in_reply_to: randomUUID() };
   const inbound = (id) => bob.inbox().find((m) => m.id === id);
 
-  const sent = await alice.send({ recipient: "Zephyr", text: "routed", ...routing });
+  const sent = await alice.send({ recipient: "Beta", text: "routed", ...routing });
   assert.equal(sent.status, "delivered");
   assert.equal(sent.envelope_downgraded, undefined);
   const got = inbound(sent.message_id);
   for (const [key, value] of Object.entries(routing)) assert.equal(got[key], value, key);
   assert.equal(probes, 1);
-  await alice.send({ recipient: "Zephyr", text: "cached", hop: 2 });
+  await alice.send({ recipient: "Beta", text: "cached", hop: 2 });
   assert.equal(probes, 1, "a definite answer is cached per contact");
-  await alice.send({ recipient: "Zephyr", text: "plain" });
+  await alice.send({ recipient: "Beta", text: "plain" });
   assert.equal(probes, 1, "no probe without routing fields");
 
   for (const next of ["old", "odd", "other-version"]) {
     mode = next;
     const fresh = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
-    const result = await fresh.send({ recipient: "Zephyr", text: `to ${next}`, ...routing });
+    const result = await fresh.send({ recipient: "Beta", text: `to ${next}`, ...routing });
     assert.equal(result.status, "delivered", next);
     assert.equal(result.envelope_downgraded, true, next);
     for (const key of Object.keys(routing)) assert.equal(inbound(result.message_id)[key], undefined, `${next}: ${key} left out`);
@@ -233,13 +233,13 @@ test("a changed endpoint clears the cached capabilities answer", async (t) => {
   const second = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false, handle });
   t.after(() => second.close());
   pair(alice, bob, { b: `http://127.0.0.1:${first.port}` });
-  await alice.send({ recipient: "Zephyr", text: "one", hop: 0 });
+  await alice.send({ recipient: "Beta", text: "one", hop: 0 });
   assert.equal(probes, 1);
   alice.discover = async () => [{ fingerprint: fingerprint(b), endpoint: `http://127.0.0.1:${second.port}` }];
   await first.close(); // the saved address stops answering, so delivery moves
-  const moved = await alice.send({ recipient: "Zephyr", text: "two", hop: 0 });
+  const moved = await alice.send({ recipient: "Beta", text: "two", hop: 0 });
   assert.ok(moved.endpoint_changed, "delivery moved to the discovered address");
-  await alice.send({ recipient: "Zephyr", text: "three", hop: 0 });
+  await alice.send({ recipient: "Beta", text: "three", hop: 0 });
   assert.equal(probes, 2, "re-probed after the endpoint changed");
 });
 
@@ -276,7 +276,7 @@ test("LAN discovery verifies nonce/signature, resolves peers and sends without a
   const peers = await discover(options);
   assert.equal(peers.length, 1);
   assert.equal(peers[0].fingerprint, fingerprint(b));
-  assert.equal((await alice.send({ recipient: "Zephyr", text: "Found via multicast" })).status, "delivered");
+  assert.equal((await alice.send({ recipient: "Beta", text: "Found via multicast" })).status, "delivered");
   const nonce = randomUUID();
   const advert = advertisement(b, listener.port, nonce);
   assert.throws(() => parseAdvert(Buffer.from(JSON.stringify(advert)), "127.0.0.1", randomUUID()));
@@ -295,12 +295,12 @@ test("a verified receipt from a discovered address replaces the stale pinned end
   const fresh = `http://127.0.0.1:${listener.port}`;
   pair(alice, bob, { b: `http://127.0.0.1:${stalePort}` });
   alice.discover = async () => [{ fingerprint: fingerprint(b), endpoint: fresh }];
-  const result = await alice.send({ recipient: "Zephyr", text: "after a move" });
+  const result = await alice.send({ recipient: "Beta", text: "after a move" });
   assert.equal(result.status, "delivered");
   assert.deepEqual(result.endpoint_changed, { from: `http://127.0.0.1:${stalePort}`, to: fresh });
   assert.equal(alice.store.contact(fingerprint(b)).endpoint, fresh);
   assert.equal(alice.store.contact(fingerprint(b)).identity.signing_key, publicIdentity(b).signing_key);
-  const again = await alice.send({ recipient: "Zephyr", text: "same address" });
+  const again = await alice.send({ recipient: "Beta", text: "same address" });
   assert.equal(again.status, "delivered");
   assert.equal(again.endpoint_changed, undefined, "no change once the address is saved");
 });
@@ -315,7 +315,7 @@ test("a saved endpoint that still answers is kept even when discovery lists anot
   pair(alice, bob, { b: `http://127.0.0.1:${saved.port}` });
   alice.discover = async () => [{ fingerprint: fingerprint(b), endpoint: `http://127.0.0.1:${other.port}` }];
   for (const text of ["one", "two"]) {
-    const result = await alice.send({ recipient: "Zephyr", text });
+    const result = await alice.send({ recipient: "Beta", text });
     assert.equal(result.status, "delivered");
     assert.equal(result.endpoint_changed, undefined, text);
   }
@@ -324,7 +324,7 @@ test("a saved endpoint that still answers is kept even when discovery lists anot
 
 test("an address answered by a different key never replaces the pinned endpoint", async (t) => {
   const { dir, a, b } = setup(t);
-  const impostor = initIdentity(join(dir, "c"), "Zephyr");
+  const impostor = initIdentity(join(dir, "c"), "Beta");
   const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
   const fake = new Peer(impostor, join(dir, "c"), { timeoutMs: 50, tailscale: false });
   fake.store.trust(publicIdentity(a), fingerprint(a));
@@ -361,7 +361,7 @@ test("MCP exposes the peer contract and delivers using the same transport", asyn
   const tools = await client.listTools();
   assert.ok(tools.tools.some((t) => t.name === "discover_peers"));
   assert.ok(!tools.tools.some((t) => t.name === "trust_peer"));
-  const result = await client.callTool({ name: "send_message", arguments: { recipient: "Zephyr", text: "via MCP", session_id: "sess-1" } });
+  const result = await client.callTool({ name: "send_message", arguments: { recipient: "Beta", text: "via MCP", session_id: "sess-1" } });
   assert.equal(JSON.parse(result.content[0].text).status, "delivered");
   assert.equal(bob.inbox()[0].text, "via MCP");
   assert.equal(bob.inbox()[0].agent.harness, "cursor");
@@ -383,7 +383,7 @@ test("CLI exports no private keys, rejects malformed commands, and stdio MCP sta
   assert.equal(exported.name, "Desktop");
   assert.equal(exported.origin.hostname, hostname());
   assert.deepEqual(exported.agent, { harness: "cursor", name: "cursor", model: "composer", session_id: "sess-1" });
-  assert.equal(run("send", "Zephyr", "--text", "a", "--file", "b").status, 1);
+  assert.equal(run("send", "Beta", "--text", "a", "--file", "b").status, 1);
   const client = new Client({ name: "stdio-test", version: "1" });
   const transport = new StdioClientTransport({ command: process.execPath, args: [cli, "--home", join(dir, "a"), "mcp", "--no-listen", "--no-tailscale"], stderr: "pipe" });
   t.after(() => client.close());

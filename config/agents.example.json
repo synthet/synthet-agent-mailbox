@@ -4,14 +4,14 @@
   "maxAttempts": 5,
   "agents": [
     {
-      "id": "zephyr",
-      "token": "replace-me-zephyr",
+      "id": "beta",
+      "token": "replace-me-beta",
       "capabilities": [],
       "projects": ["*"]
     },
     {
-      "id": "tridentx",
-      "token": "replace-me-tridentx",
+      "id": "alpha",
+      "token": "replace-me-alpha",
       "capabilities": [],
       "projects": ["*"]
     }

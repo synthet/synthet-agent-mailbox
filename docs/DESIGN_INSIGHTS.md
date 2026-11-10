@@ -11,7 +11,7 @@ This project is the shared mailbox from the two-PC agent guide. Each machine can
 
 ## Roadmap from the early Cursor and Antigravity thread
 
-The first design session (`docs/CONVERSATION_THREADS.md`) set this build order. Where it landed:
+The first design session set this build order. Where it landed:
 
 - **Expiry (TTL).** Done as message `deadline`. Expired messages become `expired` and tasks fail.
 - **Dead-letter queue.** Done. Delivery attempts are counted, and a message past `maxAttempts` becomes `dead`.
