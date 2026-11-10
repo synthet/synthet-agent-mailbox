@@ -9,6 +9,7 @@ import { agentProfile } from "./peer/metadata.js";
 import { startPeerMcp } from "./peer/mcp.js";
 import { Peer } from "./peer/peer.js";
 import { hookInject, SeenStore, unseenMessages, type HookInput } from "./peer/seen.js";
+import { gateHook, initPolicy, ledgerHook, loadPolicy, policyPath, type ToolHookInput } from "./peer/policy.js";
 import type { Contact } from "./peer/store.js";
 import { startDaemon } from "./fabric/daemon.js";
 import { installHarness, inspectHarness, uninstallHarness } from "./fabric/harness.js";
@@ -47,6 +48,10 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
   hook inject --event NAME              Hook entry point (SessionStart|UserPromptSubmit|Stop):
                                         reads the hook JSON on stdin, injects this session's
                                         unseen mail as untrusted data, marks it seen; never fails
+  hook gate                             PreToolUse send gate for send_message/mailbox_publish:
+                                        denies secrets, unlisted peers, oversize; fails closed
+  hook ledger                           PostToolUse: append metadata + sha256 to ledger.jsonl
+  policy init|check                     Write a deny-all policy.json / validate it
   sync FINGERPRINT --endpoint URL       Exchange granted events with a pinned peer
   harness install|inspect|uninstall     Project-local hook templates
        --target DIR --harness claude|codex|cursor|agy
@@ -185,11 +190,25 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case "hook": {
       // A hook must never break the session: on any problem, print nothing and exit 0.
+      let raw = "";
+      try { raw = readFileSync(0, "utf8"); } catch { raw = ""; }
+      const parsed = (): Record<string, unknown> => { try { return raw.trim() ? JSON.parse(raw) : {}; } catch { return {}; } };
+      if (argument === "gate") {
+        // The send gate fails closed: unreadable input for a sending tool still gets a deny.
+        let response: Record<string, unknown> | null;
+        try { response = gateHook(parsed() as ToolHookInput, home, peer.store, values.harness ?? null); }
+        catch (error) { response = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `agent-mail send gate error: ${error instanceof Error ? error.message : String(error)}` } }; }
+        if (response) console.log(JSON.stringify(response));
+        break;
+      }
+      if (argument === "ledger") {
+        try { ledgerHook(parsed() as ToolHookInput, home, values.harness ?? null); }
+        catch (error) { console.error(`agent-mail hook ledger: ${error instanceof Error ? error.message : String(error)}`); }
+        break;
+      }
       try {
-        if (argument !== "inject") throw new Error("Use: hook inject --event NAME");
-        let input: HookInput = {};
-        try { const raw = readFileSync(0, "utf8"); if (raw.trim()) input = JSON.parse(raw) as HookInput; }
-        catch { input = {}; }
+        if (argument !== "inject") throw new Error("Use: hook inject|gate|ledger");
+        const input = parsed() as HookInput;
         const event = values.event ?? input.hook_event_name ?? "";
         const journal = existsSync(join(home, "journal.db")) ? openJournal(home) : undefined;
         try {
@@ -197,6 +216,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if (response) console.log(JSON.stringify(response));
         } finally { journal?.close(); }
       } catch (error) { console.error(`agent-mail hook: ${error instanceof Error ? error.message : String(error)}`); }
+      break;
+    }
+    case "policy": {
+      if (argument === "init") { output(initPolicy(home)); break; }
+      if (argument !== "check") throw new Error("Use: policy init|check");
+      const loaded = loadPolicy(home);
+      output(loaded.ok ? { ok: true, path: policyPath(home), policy: loaded.policy } : { ok: false, path: policyPath(home), error: loaded.error });
+      if (!loaded.ok) process.exitCode = 1;
       break;
     }
     case "sync": {
