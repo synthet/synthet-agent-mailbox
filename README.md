@@ -127,11 +127,21 @@ Put the stable values in that harness's MCP config. A chat session id is not ava
 }
 ```
 
+### Routing fields (agent-mail/1.1)
+
+`send_message` also takes `to_session`, `hop` (0–16), `auto_reply` and `in_reply_to`. They are signed with the rest of the message, but only when the recipient's `GET /capabilities` lists `agent-mail/1.1`. Any other answer, or no answer, leaves them out, and the result says `envelope_downgraded: true`.
+
+- The MCP server caches a definite answer per contact for 10 minutes and drops it when the endpoint changes. The CLI is a new process each time, so `send` probes on every call that sets these fields.
+- A queued message keeps the fields it was signed with. A message downgraded once stays downgraded on retry; send a new message id to include the fields.
+- The answer is advisory. It never changes trust or which endpoint is saved.
+
 ## Discovery and ports
 
 LAN discovery is UDP multicast `239.255.77.31:47831`. Messages are HTTP on TCP `47832`, with the ciphertext and signature in the body. The URL is only a way to reach the peer; it is not the security boundary. Allow inbound TCP `47832` and UDP `47831` on the private network profile.
 
 Tailscale discovery runs `tailscale status --json` and probes online peers at TCP `47832`. It does not scan subnets. Install the Tailscale CLI, sign in, and allow that TCP port through the host firewall on the tailnet. `--no-tailscale` skips the probe. `--no-discovery` stops LAN advertisements.
+
+Each send tries the saved endpoint first, then discovered addresses. When a discovered address returns a receipt signed by the pinned key, it becomes the saved endpoint and the result says `endpoint_changed`. If the saved address is down, each send waits for that connection to fail before trying the next one, until a delivery moves the pin. Pin a preferred address with `trust NAME --fingerprint FP --endpoint URL`.
 
 `--interface <IPv4>` selects the LAN multicast interface. `--port` changes the TCP port; Tailscale probes use that same port via `--port` on the discoverer as well.
 

@@ -59,11 +59,14 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
                                         (releases its leases), or list live sessions
   lease claim|release|show --conversation ID [--session ID]
                                         30 min conversation lease: one session answers a thread.
-                                        Not a task claim (agent-flow owns those)
+                                        Not a task claim (agent-flow owns those), and not an
+                                        access control: any local caller can name any session
   watch --session ID [--once] [--backlog] [--interval MS]
                                         One JSON line per new message for this session: ids,
                                         thread and sender only, never bodies. Starts from now
-                                        unless --backlog; keeps the journal session live
+                                        unless --backlog; keeps the journal session live.
+                                        Each poll re-reads the unacked inbox; its seen file
+                                        keeps the newest 5000 ids
   sync FINGERPRINT --endpoint URL       Exchange granted events with a pinned peer
   harness install|inspect|uninstall     Project-local hook templates
        --target DIR --harness claude|codex|cursor|agy
