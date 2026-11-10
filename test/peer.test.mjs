@@ -172,6 +172,44 @@ test("LAN discovery verifies nonce/signature, resolves peers and sends without a
   assert.throws(() => parseAdvert(Buffer.from(JSON.stringify({ ...advert, signature: signed(a, advert.payload) })), "127.0.0.1", nonce));
 });
 
+test("a verified receipt from a discovered address replaces the stale pinned endpoint", async (t) => {
+  const { dir, a, b } = setup(t);
+  const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
+  const bob = new Peer(b, join(dir, "b"), { timeoutMs: 50, tailscale: false });
+  const listener = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false });
+  t.after(() => listener.close());
+  const stale = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false });
+  const stalePort = stale.port;
+  await stale.close();
+  const fresh = `http://127.0.0.1:${listener.port}`;
+  pair(alice, bob, { b: `http://127.0.0.1:${stalePort}` });
+  alice.discover = async () => [{ fingerprint: fingerprint(b), endpoint: fresh }];
+  const result = await alice.send({ recipient: "Zephyr", text: "after a move" });
+  assert.equal(result.status, "delivered");
+  assert.deepEqual(result.endpoint_changed, { from: `http://127.0.0.1:${stalePort}`, to: fresh });
+  assert.equal(alice.store.contact(fingerprint(b)).endpoint, fresh);
+  assert.equal(alice.store.contact(fingerprint(b)).identity.signing_key, publicIdentity(b).signing_key);
+  const again = await alice.send({ recipient: "Zephyr", text: "same address" });
+  assert.equal(again.status, "delivered");
+  assert.equal(again.endpoint_changed, undefined, "no change once the address is saved");
+});
+
+test("an address answered by a different key never replaces the pinned endpoint", async (t) => {
+  const { dir, a, b } = setup(t);
+  const impostor = initIdentity(join(dir, "c"), "Zephyr");
+  const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
+  const fake = new Peer(impostor, join(dir, "c"), { timeoutMs: 50, tailscale: false });
+  fake.store.trust(publicIdentity(a), fingerprint(a));
+  const listener = await fake.listen({ port: 0, bind: "127.0.0.1", discovery: false });
+  t.after(() => listener.close());
+  const pinned = "http://127.0.0.1:9";
+  alice.store.trust(publicIdentity(b), fingerprint(b), pinned);
+  alice.discover = async () => [{ fingerprint: fingerprint(b), endpoint: `http://127.0.0.1:${listener.port}` }];
+  const result = await alice.send({ recipient: fingerprint(b), text: "wrong host" });
+  assert.equal(result.status, "queued");
+  assert.equal(alice.store.contact(fingerprint(b)).endpoint, pinned);
+});
+
 test("Tailscale candidates include online IPv4/IPv6 peers only and never shell text", () => {
   assert.deepEqual(tailscaleAddresses({ Peer: {
     a: { Online: true, TailscaleIPs: ["100.64.0.1", "fd7a:115c:a1e0::1", "$(bad)"] },
