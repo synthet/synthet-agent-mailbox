@@ -228,6 +228,8 @@ function parseToolResult(response: unknown): Record<string, unknown> {
 export interface LedgerEntry {
   ts: string; session: string | null; harness: string | null; tool: string; peer: string | null;
   conversation_id: string | null; message_id: string | null; sha256: string | null; decision: string;
+  /** What a dispatch wake cost, when the harness reported it. */
+  cost_usd?: number;
 }
 
 /** Append one metadata line. The body is stored only as its sha256, never as text. */

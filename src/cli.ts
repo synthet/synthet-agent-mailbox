@@ -14,6 +14,7 @@ import { gateHook, initPolicy, ledgerHook, loadPolicy, policyPath, type ToolHook
 import type { Contact } from "./peer/store.js";
 import { startDaemon } from "./fabric/daemon.js";
 import { installHarness, inspectHarness, uninstallHarness } from "./fabric/harness.js";
+import { acquireDispatchLock, defaultRunners, dispatchOnce, RateWindow } from "./fabric/dispatch.js";
 import { Journal } from "./fabric/journal.js";
 import { syncOnce } from "./fabric/sync.js";
 
@@ -68,6 +69,11 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
                                         unless --backlog; keeps the journal session live.
                                         Each poll re-reads the unacked inbox; its seen file
                                         keeps the newest 5000 ids
+  dispatch [--once] [--backlog] [--interval MS]
+                                        For peers enabled in policy.json dispatch: answer typed
+                                        queries from code or wake the owning session (metadata
+                                        only). Never acks; one JSON line per decision. Starts
+                                        from now unless --backlog; single instance
   sync FINGERPRINT --endpoint URL       Exchange granted events with a pinned peer
   harness install|inspect|uninstall     Project-local hook templates
        --target DIR --harness claude|codex|cursor|agy
@@ -226,6 +232,37 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
       });
+      break;
+    }
+    case "dispatch": {
+      const release = acquireDispatchLock(home);
+      const interval = Math.max(1000, Number(values.interval ?? 5000) || 5000);
+      const rate = new RateWindow();
+      // Like watch: open journal.db only once it exists, so dispatch never creates it (#16).
+      let journal: Journal | undefined;
+      const poll = async () => {
+        if (!journal && existsSync(join(home, "journal.db"))) journal = openJournal(home);
+        const loaded = loadPolicy(home);
+        if (!loaded.ok) { console.error(`[agent-mail] dispatch: ${loaded.error}`); return; }
+        const records = await dispatchOnce({ peer, home, policy: loaded.policy, runners: defaultRunners, rate, journal, backlog: !!values.backlog });
+        for (const record of records) console.log(JSON.stringify(record));
+      };
+      try {
+        await poll();
+        if (!values.once) {
+          await new Promise<void>((resolve) => {
+            let busy = false;
+            const timer = setInterval(() => {
+              if (busy) return;
+              busy = true;
+              poll().catch((error) => console.error(`[agent-mail] dispatch: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { busy = false; });
+            }, interval);
+            const stop = () => { clearInterval(timer); resolve(); };
+            process.once("SIGINT", stop);
+            process.once("SIGTERM", stop);
+          });
+        }
+      } finally { journal?.close(); release(); }
       break;
     }
     case "publish": {
