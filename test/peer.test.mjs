@@ -154,24 +154,6 @@ test("joining multicast again is safe and one bad interface does not stop the ot
   assert.equal(joinMulticast(socket, "239.255.77.32", interfaces), 0);
 });
 
-test("LAN discovery verifies nonce/signature, resolves peers and sends without an explicit endpoint", async (t) => {
-  const { dir, a, b } = setup(t);
-  const options = { port: 49000 + Math.floor(Math.random() * 1000), group: "239.255.77.32", timeoutMs: 800, tailscale: false };
-  const alice = new Peer(a, join(dir, "a"), options);
-  const bob = new Peer(b, join(dir, "b"), options);
-  pair(alice, bob);
-  const listener = await bob.listen({ port: 0, bind: "127.0.0.1" });
-  t.after(() => listener.close());
-  const peers = await discover(options);
-  assert.equal(peers.length, 1);
-  assert.equal(peers[0].fingerprint, fingerprint(b));
-  assert.equal((await alice.send({ recipient: "Zephyr", text: "Found via multicast" })).status, "delivered");
-  const nonce = randomUUID();
-  const advert = advertisement(b, listener.port, nonce);
-  assert.throws(() => parseAdvert(Buffer.from(JSON.stringify(advert)), "127.0.0.1", randomUUID()));
-  assert.throws(() => parseAdvert(Buffer.from(JSON.stringify({ ...advert, signature: signed(a, advert.payload) })), "127.0.0.1", nonce));
-});
-
 test("agent-mail/1.1 routing fields are signed, round-trip, and are advertised at /capabilities", async (t) => {
   const { dir, a, b } = setup(t);
   const base = message(a, b);
@@ -189,6 +171,24 @@ test("agent-mail/1.1 routing fields are signed, round-trip, and are advertised a
   t.after(() => listener.close());
   const response = await fetch(`http://127.0.0.1:${listener.port}/capabilities`);
   assert.deepEqual(await response.json(), { envelope: ["agent-mail/1.1"] });
+});
+
+test("LAN discovery verifies nonce/signature, resolves peers and sends without an explicit endpoint", async (t) => {
+  const { dir, a, b } = setup(t);
+  const options = { port: 49000 + Math.floor(Math.random() * 1000), group: "239.255.77.32", timeoutMs: 800, tailscale: false };
+  const alice = new Peer(a, join(dir, "a"), options);
+  const bob = new Peer(b, join(dir, "b"), options);
+  pair(alice, bob);
+  const listener = await bob.listen({ port: 0, bind: "127.0.0.1" });
+  t.after(() => listener.close());
+  const peers = await discover(options);
+  assert.equal(peers.length, 1);
+  assert.equal(peers[0].fingerprint, fingerprint(b));
+  assert.equal((await alice.send({ recipient: "Zephyr", text: "Found via multicast" })).status, "delivered");
+  const nonce = randomUUID();
+  const advert = advertisement(b, listener.port, nonce);
+  assert.throws(() => parseAdvert(Buffer.from(JSON.stringify(advert)), "127.0.0.1", randomUUID()));
+  assert.throws(() => parseAdvert(Buffer.from(JSON.stringify({ ...advert, signature: signed(a, advert.payload) })), "127.0.0.1", nonce));
 });
 
 test("Tailscale candidates include online IPv4/IPv6 peers only and never shell text", () => {
