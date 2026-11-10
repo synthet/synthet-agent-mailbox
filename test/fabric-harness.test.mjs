@@ -40,3 +40,13 @@ test("digest hook exits 0 and does not print a malicious body", (t) => {
   assert.equal(again.status, 0);
   assert.equal(again.stdout, missing.stdout);
 });
+
+test("the installed agent-mailbox skill matches the authored .claude skill", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "fabric-harness-skill-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  installHarness(dir, "codex");
+  const installed = readFileSync(join(dir, ".agents/skills/agent-mailbox/SKILL.md"), "utf8").replace(/\r\n/g, "\n");
+  const authored = readFileSync(new URL("../.claude/skills/agent-mailbox/SKILL.md", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.equal(installed, authored);
+  for (const tool of ["mailbox_list_sessions", "reply_to_message", "harness_session_id"]) assert.ok(installed.includes(tool), tool);
+});
