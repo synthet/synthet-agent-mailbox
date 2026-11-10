@@ -12,7 +12,15 @@ const unsignedSchema = z.object({
   created_at: z.number().int().nonnegative(),
   origin: originSchema,
   agent: agentSchema.optional(),
+  // agent-mail/1.1 routing fields (ADR 0003). Optional and signed. Send them only to a peer whose
+  // /capabilities lists ENVELOPE_VERSION: older receivers reject unknown fields.
+  to_session: z.string().trim().min(1).max(200).refine((value) => !/[\r\n]/.test(value), "to_session cannot contain line breaks").optional(),
+  hop: z.number().int().min(0).max(16).optional(),
+  auto_reply: z.boolean().optional(),
+  in_reply_to: z.string().uuid().optional(),
 }).strict();
+/** Message envelope version this build accepts, advertised at GET /capabilities. */
+export const ENVELOPE_VERSION = "agent-mail/1.1";
 export const messageSchema = unsignedSchema.extend({
   signature: z.string().min(1).max(128),
 }).strict().refine((message) => Buffer.byteLength(JSON.stringify(message), "utf8") <= 96 * 1024, "Encoded message exceeds 96 KiB");
