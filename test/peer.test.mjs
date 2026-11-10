@@ -181,6 +181,68 @@ test("agent-mail/1.1 routing fields are signed, round-trip, and are advertised a
   assert.deepEqual(await response.json(), { envelope: ["agent-mail/1.1"] });
 });
 
+test("routing fields are sent only to a peer whose /capabilities accepts agent-mail/1.1", async (t) => {
+  const { dir, a, b } = setup(t);
+  const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
+  const bob = new Peer(b, join(dir, "b"), { timeoutMs: 50, tailscale: false });
+  let mode = "new";
+  let probes = 0;
+  const handle = (req, res) => {
+    if (req.url !== "/capabilities") return false;
+    probes++;
+    if (mode === "new") return false; // the real listener answers
+    if (mode === "old") { res.writeHead(404).end(); return true; }
+    res.writeHead(200, { "content-type": "application/json" }).end(mode === "odd" ? "not json" : JSON.stringify({ envelope: ["agent-mail/9"] }));
+    return true;
+  };
+  const listener = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false, handle });
+  t.after(() => listener.close());
+  pair(alice, bob, { b: `http://127.0.0.1:${listener.port}` });
+  const routing = { to_session: "codex-7", hop: 1, auto_reply: true, in_reply_to: randomUUID() };
+  const inbound = (id) => bob.inbox().find((m) => m.id === id);
+
+  const sent = await alice.send({ recipient: "Zephyr", text: "routed", ...routing });
+  assert.equal(sent.status, "delivered");
+  assert.equal(sent.envelope_downgraded, undefined);
+  const got = inbound(sent.message_id);
+  for (const [key, value] of Object.entries(routing)) assert.equal(got[key], value, key);
+  assert.equal(probes, 1);
+  await alice.send({ recipient: "Zephyr", text: "cached", hop: 2 });
+  assert.equal(probes, 1, "a definite answer is cached per contact");
+  await alice.send({ recipient: "Zephyr", text: "plain" });
+  assert.equal(probes, 1, "no probe without routing fields");
+
+  for (const next of ["old", "odd", "other-version"]) {
+    mode = next;
+    const fresh = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
+    const result = await fresh.send({ recipient: "Zephyr", text: `to ${next}`, ...routing });
+    assert.equal(result.status, "delivered", next);
+    assert.equal(result.envelope_downgraded, true, next);
+    for (const key of Object.keys(routing)) assert.equal(inbound(result.message_id)[key], undefined, `${next}: ${key} left out`);
+  }
+  assert.equal(alice.store.contact(fingerprint(b)).endpoint, `http://127.0.0.1:${listener.port}`, "capabilities never change the saved endpoint");
+});
+
+test("a changed endpoint clears the cached capabilities answer", async (t) => {
+  const { dir, a, b } = setup(t);
+  const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
+  const bob = new Peer(b, join(dir, "b"), { timeoutMs: 50, tailscale: false });
+  let probes = 0;
+  const handle = (req) => { if (req.url === "/capabilities") probes++; return false; };
+  const first = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false, handle });
+  const second = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false, handle });
+  t.after(() => second.close());
+  pair(alice, bob, { b: `http://127.0.0.1:${first.port}` });
+  await alice.send({ recipient: "Zephyr", text: "one", hop: 0 });
+  assert.equal(probes, 1);
+  alice.discover = async () => [{ fingerprint: fingerprint(b), endpoint: `http://127.0.0.1:${second.port}` }];
+  await first.close(); // the saved address stops answering, so delivery moves
+  const moved = await alice.send({ recipient: "Zephyr", text: "two", hop: 0 });
+  assert.ok(moved.endpoint_changed, "delivery moved to the discovered address");
+  await alice.send({ recipient: "Zephyr", text: "three", hop: 0 });
+  assert.equal(probes, 2, "re-probed after the endpoint changed");
+});
+
 test("LAN discovery verifies nonce/signature, resolves peers and sends without an explicit endpoint", async (t) => {
   const { dir, a, b } = setup(t);
   const options = { port: await freeUdpPort(), group: "239.255.77.32", timeoutMs: 800, tailscale: false };
@@ -219,6 +281,23 @@ test("a verified receipt from a discovered address replaces the stale pinned end
   const again = await alice.send({ recipient: "Zephyr", text: "same address" });
   assert.equal(again.status, "delivered");
   assert.equal(again.endpoint_changed, undefined, "no change once the address is saved");
+});
+
+test("a saved endpoint that still answers is kept even when discovery lists another address first", async (t) => {
+  const { dir, a, b } = setup(t);
+  const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
+  const bob = new Peer(b, join(dir, "b"), { timeoutMs: 50, tailscale: false });
+  const saved = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false });
+  const other = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false });
+  t.after(async () => { await saved.close(); await other.close(); });
+  pair(alice, bob, { b: `http://127.0.0.1:${saved.port}` });
+  alice.discover = async () => [{ fingerprint: fingerprint(b), endpoint: `http://127.0.0.1:${other.port}` }];
+  for (const text of ["one", "two"]) {
+    const result = await alice.send({ recipient: "Zephyr", text });
+    assert.equal(result.status, "delivered");
+    assert.equal(result.endpoint_changed, undefined, text);
+  }
+  assert.equal(alice.store.contact(fingerprint(b)).endpoint, `http://127.0.0.1:${saved.port}`);
 });
 
 test("an address answered by a different key never replaces the pinned endpoint", async (t) => {
