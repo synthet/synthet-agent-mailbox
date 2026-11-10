@@ -97,7 +97,7 @@ export const INJECT_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"] as con
 
 const attr = (value: string) => value.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 /** A body must not be able to close its own wrapper and speak outside it. */
-const stripTags = (text: string) => text.replace(new RegExp(`<\\s*/?\\s*${UNTRUSTED_TAG}[^>]*>`, "gi"), "[tag removed]");
+export const stripTags = (text: string) => text.replace(new RegExp(`<\\s*/?\\s*${UNTRUSTED_TAG}[^>]*>`, "gi"), "[tag removed]");
 
 /** Wrap messages as clearly-labelled untrusted data for a model's context. */
 export function wrapUntrusted(items: UnseenMessage[]): string {

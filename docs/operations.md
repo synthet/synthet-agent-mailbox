@@ -39,6 +39,33 @@ node dist/cli.js harness uninstall --target D:\Projects\example
 
 These templates were not executed inside Claude, Codex, Cursor, or Antigravity during this change. Cursor cloud agents were not checked.
 
+## Dispatch
+
+`agent-mail dispatch` answers typed queries, wakes the session that owns new peer mail, or runs a read-only responder ([ADR 0004](architecture/0004-dispatch-mailbox-decides-swarm-executes.md)). It does nothing until `policy.json` has `"dispatch": { "enabled": true, ... }` and lists the peer by fingerprint. The `mail-dispatch` skill documents the policy fields and the ledger lines.
+
+Check the policy, then try one poll:
+
+```powershell
+node dist/cli.js policy check
+node dist/cli.js dispatch --once
+```
+
+Run it as a scheduled task at logon, as yourself. Wakes and responder runs use your logged-in Claude, Codex or Cursor account, so the task must not run as another user or as SYSTEM:
+
+```powershell
+schtasks /Create /TN "agent-mail dispatch" /SC ONLOGON /TR "node <repo>\dist\cli.js dispatch"
+```
+
+Use a path without spaces, or wrap it in escaped quotes. The listener that owns the peer port is a separate process; dispatch only reads the stored inbox.
+
+Prerequisites:
+
+- A Claude wake needs the target session started with `claude --name <destination>`; `claude agents --json` must show exactly one session with that name.
+- A Codex wake uses `codex queue --resume`, which needs Codex CLI 0.166 or later. On older builds the wake fails and a toast is shown instead.
+- The responder needs `swarm_command` set to a built `synthet-agent-swarm` (its `run --request -` command). Enabling it sends that peer's message text to the responder harness's provider.
+
+To stop it, set `"enabled": false` in the `dispatch` section. That takes effect on the next poll, without restarting the task. To remove it, run `schtasks /Delete /TN "agent-mail dispatch"`. Only one instance runs, through `dispatch.lock`; a lock left by a dead process is replaced.
+
 ## Backup
 
 Copy, while the daemon is stopped:
@@ -47,6 +74,7 @@ Copy, while the daemon is stopped:
 - `journal.db`, `journal.db-wal`, `journal.db-shm`
 - `blobs/`
 - the JSON directories `contacts`, `inbox`, `acked`, `outbox`, `sent`
+- `policy.json`, `ledger.jsonl` and `sessions/`. That folder holds the seen files, including the dispatcher's; without it, the next dispatch poll starts from now.
 
 `node dist/cli.js` repair is not a separate command. Opening a `Journal` and calling `repair()` checks blob hashes.
 
