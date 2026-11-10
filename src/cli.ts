@@ -166,7 +166,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       break;
     }
     case "register": {
-      const journal = openJournal(home);
+      const journal = openJournal(home, true);
       try { output(journal.registerSession({ session_id: required(values.session, "--session"), alias: values["agent-name"], harness: values.harness, model: values.model })); }
       finally { journal.close(); }
       break;
@@ -291,7 +291,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       break;
     }
     case "sync": {
-      const journal = openJournal(home);
+      const journal = openJournal(home, true);
       try {
         const contact = peer.store.contact(required(argument, "fingerprint"));
         output(await syncOnce(journal, loadIdentity(home), { endpoint: required(values.endpoint, "--endpoint"), identity: contact.identity }, (id) => peer.store.get<Contact>("contacts", id)?.identity));
@@ -328,7 +328,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 }
 
-function openJournal(home: string): Journal {
+/**
+ * Open journal.db. Only commands that are meant to start a journal (register, sync) pass create;
+ * the rest fail instead of creating the file as a side effect, which would switch the dashboard's view (#16).
+ */
+function openJournal(home: string, create = false): Journal {
+  if (!create && !existsSync(join(home, "journal.db"))) throw new Error("No journal.db yet. Run `agent-mail register --session ID` first.");
   return new Journal(home, loadIdentity(home));
 }
 

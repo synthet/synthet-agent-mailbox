@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -241,6 +241,28 @@ test("a changed endpoint clears the cached capabilities answer", async (t) => {
   assert.ok(moved.endpoint_changed, "delivery moved to the discovered address");
   await alice.send({ recipient: "Zephyr", text: "three", hop: 0 });
   assert.equal(probes, 2, "re-probed after the endpoint changed");
+});
+
+test("MCP mailbox tools never create journal.db; only mailbox_register_session does (#16)", async (t) => {
+  const { dir, a } = setup(t);
+  const home = join(dir, "a");
+  const server = createPeerMcp(new Peer(a, home, { tailscale: false }));
+  const client = new Client({ name: "test", version: "1" });
+  const [left, right] = InMemoryTransport.createLinkedPair();
+  await server.connect(left);
+  await client.connect(right);
+  for (const [name, args] of [["mailbox_list", { session_id: "s" }], ["mailbox_poll", { session_id: "s" }], ["mailbox_session_heartbeat", { session_id: "s" }], ["mailbox_lease_conversation", { session_id: "s", conversation_id: randomUUID() }]]) {
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true, name);
+    assert.match(result.content[0].text, /No mailbox journal/, name);
+  }
+  assert.equal(existsSync(join(home, "journal.db")), false);
+  const registered = await client.callTool({ name: "mailbox_register_session", arguments: { session_id: "s" } });
+  assert.notEqual(registered.isError, true);
+  assert.equal(existsSync(join(home, "journal.db")), true);
+  assert.notEqual((await client.callTool({ name: "mailbox_list", arguments: { session_id: "s" } })).isError, true);
+  await client.close();
+  await server.close(); // releases journal.db before the temp dir is removed
 });
 
 test("LAN discovery verifies nonce/signature, resolves peers and sends without an explicit endpoint", async (t) => {

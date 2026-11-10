@@ -1,5 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { z } from "zod";
 import { Journal } from "../fabric/journal.js";
@@ -31,13 +33,18 @@ export function createPeerMcp(peer: Peer): McpServer {
   server.tool("queue_status", "Count local queued, unread, and sent messages. No central mailbox is involved.", {}, () => wrap(() => peer.status()));
   server.tool("retry_outbox", "Retry durable queued messages directly. Repeated delivery is deduplicated by sender fingerprint and message id.", {}, () => wrap(() => peer.flush()));
   let journal: Journal | undefined;
-  const useJournal = () => {
+  // Only mailbox_register_session may create journal.db. Every other tool needs a registered session
+  // anyway, and creating the file as a side effect switches the dashboard's view (#16).
+  const useJournal = (create = false) => {
+    if (!journal && !create && !existsSync(join(peer.store.dir, "journal.db"))) {
+      throw new Error("No mailbox journal on this PC yet. Call mailbox_register_session first.");
+    }
     try { return journal ??= new Journal(peer.store.dir, peer.identity); }
     catch (error) { throw journalLoadError(error); }
   };
   server.tool("mailbox_register_session", "Register a logical agent session. The alias is not the harness or model name.", {
     session_id: z.string().min(1).max(200), alias: z.string().min(1).max(80).optional(), harness: z.string().max(80).optional(), model: z.string().max(120).optional(),
-  }, (args) => wrap(() => useJournal().registerSession(args)));
+  }, (args) => wrap(() => useJournal(true).registerSession(args)));
   server.tool("mailbox_session_heartbeat", "Mark a registered session alive and renew its conversation leases. A session counts as live for 10 minutes after its last heartbeat; send one about every 5 minutes.", {
     session_id: z.string().min(1).max(200),
   }, (args) => wrap(() => useJournal().heartbeat(args.session_id)));
