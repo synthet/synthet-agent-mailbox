@@ -17,8 +17,35 @@ export const peerSendShape = {
   agent_name: z.string().min(1).max(120).optional().describe("Override the agent name configured on this MCP server."),
   model: z.string().min(1).max(120).optional().describe("Override the model name configured on this MCP server."),
   session_id: z.string().min(1).max(200).optional().describe("Chat or agent session id, when this harness knows it."),
+  // agent-mail/1.1 routing fields. Sent only when the recipient's /capabilities says it accepts them;
+  // otherwise they are left out and the result says envelope_downgraded.
+  to_session: z.string().trim().min(1).max(200).refine((value) => !/[\r\n]/.test(value), "to_session cannot contain line breaks").optional()
+    .describe("Recipient session that should handle this message (agent-mail/1.1)."),
+  hop: z.number().int().min(0).max(16).optional().describe("Reply depth in an automated exchange (agent-mail/1.1)."),
+  auto_reply: z.boolean().optional().describe("True when no human wrote this message; receivers never auto-reply to it (agent-mail/1.1)."),
+  in_reply_to: z.string().uuid().optional().describe("Message id this one answers (agent-mail/1.1)."),
 };
+const ROUTING_FIELDS = ["to_session", "hop", "auto_reply", "in_reply_to"] as const;
+/** How long a definite /capabilities answer is reused before the next probe. */
+const CAPABILITY_TTL_MS = 10 * 60_000;
 export type SendOptions = z.infer<z.ZodObject<typeof peerSendShape>>;
+
+async function readLimited(response: Response, limit: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.length;
+      if (bytes > limit) throw new Error("Oversized response");
+      chunks.push(chunk.value);
+    }
+  } finally { await reader.cancel(); }
+  return Buffer.concat(chunks).toString();
+}
 
 /** A same-PC advertiser is reached through its LAN address. Try loopback first so a listener on 127.0.0.1 still receives. */
 function preferLocalLoopback(endpoints: string[]): string[] {
@@ -39,6 +66,8 @@ function preferLocalLoopback(endpoints: string[]): string[] {
 
 export class Peer {
   readonly store: PeerStore;
+  /** Per-contact /capabilities answers. Advisory only: never used for trust or for saving an endpoint. */
+  private readonly capabilities = new Map<string, { at: number; accepts: boolean }>();
   constructor(readonly identity: Identity, dir: string, readonly discoveryOptions: DiscoveryOptions = {}, readonly agent: AgentDefaults = {}) { this.store = new PeerStore(dir); }
   whoami() {
     return { ...publicIdentity(this.identity), fingerprint: fingerprint(this.identity), origin: localOrigin(), agent: agentProfile(this.agent) ?? null };
@@ -59,10 +88,18 @@ export class Peer {
     const existing = this.store.get<PeerMessage>("sent", id) ?? this.store.get<PeerMessage>("outbox", id);
     if (existing && this.conflicts(existing, args, fingerprint(contact.identity))) throw new Error("Message id already used with different content");
     const agent = this.profileFor(args);
+    // The fields are signed, so decide before signing. A retry reuses the stored message as it was signed.
+    const routing = Object.fromEntries(ROUTING_FIELDS.filter((key) => args[key] !== undefined).map((key) => [key, args[key]]));
+    let endpoints: string[] | undefined;
+    let downgraded = false;
+    if (!existing && Object.keys(routing).length) {
+      endpoints = await this.endpointsFor(contact);
+      if (!await this.acceptsEnvelope(contact, endpoints)) downgraded = true;
+    }
     const created = existing ?? signMessage(this.identity, {
       id, conversation_id: args.conversation_id ?? randomUUID(), sender: fingerprint(this.identity),
       recipient: fingerprint(contact.identity), text: args.text, created_at: Date.now(), origin: localOrigin(),
-      ...(agent ? { agent } : {}),
+      ...(agent ? { agent } : {}), ...(downgraded ? {} : routing),
     });
     let message = messageSchema.parse(created);
     const candidate = message.signature;
@@ -70,7 +107,39 @@ export class Peer {
     this.store.put("outbox", id, message, true);
     message = this.store.get<PeerMessage>("outbox", id)!;
     if (this.conflicts(message, args, fingerprint(contact.identity)) || (!existing && message.signature !== candidate)) throw new Error("Concurrent message id conflict");
-    return this.deliver(message);
+    const result = await this.deliver(message, endpoints);
+    return downgraded ? { ...result, envelope_downgraded: true } : result;
+  }
+  /**
+   * Whether this contact accepts the agent-mail/1.1 fields, from GET /capabilities. A missing, failed
+   * or odd answer means no, and leaving the fields out is harmless. Only a definite answer is cached;
+   * the cache is cleared when the contact's endpoint changes.
+   */
+  async acceptsEnvelope(contact: Contact, endpoints?: string[]): Promise<boolean> {
+    const key = fingerprint(contact.identity);
+    const cached = this.capabilities.get(key);
+    if (cached && Date.now() - cached.at < CAPABILITY_TTL_MS) return cached.accepts;
+    for (const endpoint of endpoints ?? await this.endpointsFor(contact)) {
+      try {
+        const response = await fetch(new URL("/capabilities", validateEndpoint(endpoint)), { signal: AbortSignal.timeout(1500), redirect: "error" });
+        if (response.status === 404) { await response.body?.cancel(); this.capabilities.set(key, { at: Date.now(), accepts: false }); return false; }
+        if (!response.ok) { await response.body?.cancel(); continue; }
+        const text = await readLimited(response, 4096);
+        const body = JSON.parse(text) as { envelope?: unknown };
+        const accepts = Array.isArray(body?.envelope) && body.envelope.includes(ENVELOPE_VERSION);
+        this.capabilities.set(key, { at: Date.now(), accepts });
+        return accepts;
+      } catch { /* try the next address; no answer at all means no */ }
+    }
+    return false;
+  }
+  private async endpointsFor(contact: Contact): Promise<string[]> {
+    const recipient = fingerprint(contact.identity);
+    let endpoints: string[] = [];
+    try { endpoints = (await this.discover()).filter((p) => p.fingerprint === recipient).map((p) => p.endpoint); }
+    catch { /* Explicit endpoints work even when multicast is unavailable. */ }
+    if (contact.endpoint && !endpoints.includes(contact.endpoint)) endpoints.push(contact.endpoint);
+    return preferLocalLoopback(endpoints);
   }
   private profileFor(args: SendOptions): AgentMeta | undefined {
     return agentProfile({
@@ -88,14 +157,10 @@ export class Peer {
     ];
     return explicit.some(([key, value]) => value !== undefined && existing.agent?.[key] !== value);
   }
-  private async deliver(message: PeerMessage) {
+  private async deliver(message: PeerMessage, known?: string[]) {
     try {
       const contact = this.store.contact(message.recipient);
-      let endpoints: string[] = [];
-      try { endpoints = (await this.discover()).filter((p) => p.fingerprint === message.recipient).map((p) => p.endpoint); }
-      catch { /* Explicit endpoints work even when multicast is unavailable. */ }
-      if (contact.endpoint && !endpoints.includes(contact.endpoint)) endpoints.push(contact.endpoint);
-      endpoints = preferLocalLoopback(endpoints);
+      const endpoints = known?.length ? known : await this.endpointsFor(contact);
       if (!endpoints.length) throw new Error("Peer offline or undiscoverable; message remains queued");
       let failure: unknown;
       for (const endpoint of endpoints) {
@@ -127,6 +192,7 @@ export class Peer {
           // peer. Save it so later sends and retries work when discovery doesn't find the peer.
           if (endpoint !== contact.endpoint) {
             this.store.trust(contact.identity, fingerprint(contact.identity), endpoint);
+            this.capabilities.delete(fingerprint(contact.identity));
             return { ...delivered, endpoint_changed: { from: contact.endpoint ?? null, to: endpoint } };
           }
           return delivered;
