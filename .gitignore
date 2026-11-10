@@ -17,3 +17,7 @@ codex-session-*.md
 /.cursor/mcp.json
 /.claude/settings.local.json
 /.agents/mcp_config.json
+
+# Local scratch and machine-local Codex config
+/tmp-*
+/.codex/config.toml
