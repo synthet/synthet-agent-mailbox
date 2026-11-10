@@ -17,13 +17,13 @@ const config = {
   maxAttempts: 5,
   agents: [
     {
-      id: "zephyr",
+      id: "beta",
       token: desktop,
       capabilities: [],
       projects: ["*"],
     },
     {
-      id: "tridentx",
+      id: "alpha",
       token: laptop,
       capabilities: [],
       projects: ["*"],
@@ -34,8 +34,8 @@ writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 console.error(`Wrote ${file}.`);
 console.error("Keep this file on the mailbox host only. Copy each token into that PC's adapter .env.");
 console.error("");
-console.error("zephyr");
+console.error("beta");
 console.error(desktop);
 console.error("");
-console.error("tridentx");
+console.error("alpha");
 console.error(laptop);

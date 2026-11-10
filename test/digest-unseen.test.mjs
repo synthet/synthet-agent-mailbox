@@ -14,14 +14,14 @@ function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), "agent-mail-unseen-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const home = join(dir, "me");
-  const me = initIdentity(home, "TridentX");
-  const them = initIdentity(join(dir, "them"), "Zephyr");
+  const me = initIdentity(home, "Alpha");
+  const them = initIdentity(join(dir, "them"), "Beta");
   const peer = new Peer(me, home);
   peer.store.trust(publicIdentity(them), fingerprint(them));
   const deliver = (text = "hello") => {
     const m = signMessage(them, {
       id: randomUUID(), conversation_id: randomUUID(), sender: fingerprint(them), recipient: fingerprint(me), text, created_at: Date.now(),
-      origin: { hostname: "zephyr", platform: "test", arch: "x64", addresses: ["192.0.2.20"] },
+      origin: { hostname: "beta", platform: "test", arch: "x64", addresses: ["192.0.2.20"] },
     });
     peer.store.put("inbox", m.sender + ":" + m.id, m);
     return m;
@@ -42,7 +42,7 @@ test("unseen lists unacked peer mail once, then nothing after mark-seen", (t) =>
   const first = unseenMessages(peer, seen, { session: "s1" });
   assert.equal(first.length, 1);
   assert.equal(first[0].key, `peer:${m.sender}:${m.id}`);
-  assert.equal(first[0].sender_label, "Zephyr");
+  assert.equal(first[0].sender_label, "Beta");
   assert.equal(first[0].body, undefined, "no body without bodies:true");
   assert.equal(seen.mark([first[0].key]), 1);
   assert.equal(seen.mark([first[0].key]), 0, "marking twice is idempotent");

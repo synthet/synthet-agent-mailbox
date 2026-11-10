@@ -16,14 +16,14 @@ function setup(t) {
   const dir = mkdtempSync(join(tmpdir(), "agent-mail-p1-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const home = join(dir, "me");
-  const me = initIdentity(home, "TridentX");
-  const them = initIdentity(join(dir, "them"), "Zephyr");
+  const me = initIdentity(home, "Alpha");
+  const them = initIdentity(join(dir, "them"), "Beta");
   const peer = new Peer(me, home);
   peer.store.trust(publicIdentity(them), fingerprint(them));
   const deliver = (text = "hello") => {
     const m = signMessage(them, {
       id: randomUUID(), conversation_id: randomUUID(), sender: fingerprint(them), recipient: fingerprint(me), text, created_at: Date.now(),
-      origin: { hostname: "zephyr", platform: "test", arch: "x64", addresses: ["192.0.2.20"] },
+      origin: { hostname: "beta", platform: "test", arch: "x64", addresses: ["192.0.2.20"] },
     });
     peer.store.put("inbox", m.sender + ":" + m.id, m);
     return m;
@@ -106,7 +106,7 @@ test("watch starts from now, reports each new message once with metadata only, a
   const lines = watchPoll(peer, home, "s1", undefined);
   assert.equal(lines.length, 1);
   assert.deepEqual(Object.keys(lines[0]).sort(), ["created_at", "from", "id", "source", "thread", "type"]);
-  assert.deepEqual(lines[0], { type: "mail", source: "peer", id: m.id, thread: m.conversation_id, from: "Zephyr", created_at: m.created_at });
+  assert.deepEqual(lines[0], { type: "mail", source: "peer", id: m.id, thread: m.conversation_id, from: "Beta", created_at: m.created_at });
   assert.equal(JSON.stringify(lines).includes("secret"), false, "no body in wake lines");
   assert.deepEqual(watchPoll(peer, home, "s1", undefined), [], "reported once");
   assert.equal(unseenMessages(peer, new SeenStore(home, "s1"), { session: "s1" }).length, 2, "inject hooks still see both");

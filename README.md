@@ -46,8 +46,8 @@ On each PC, with the other one listening:
 
 ```powershell
 node dist/cli.js discover
-node dist/cli.js trust Zephyr --fingerprint <64-hex-chars-from-the-other-pc>
-node dist/cli.js send Zephyr --text "Review the auth change."
+node dist/cli.js trust PC-B --fingerprint <64-hex-chars-from-the-other-pc>
+node dist/cli.js send PC-B --text "Review the auth change."
 ```
 
 `trust --file public.json --fingerprint <64-hex>` pairs a peer that is offline. The file is the JSON from `identity`, not `identity.json`. Trust is stored locally and is not reciprocal: both sides pin each other. A name collision is rejected until you pass the full fingerprint.
