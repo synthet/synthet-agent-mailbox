@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "agent-mail": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/am.mjs",
+        "mcp",
+        "--no-listen",
+        "--harness",
+        "claude-code",
+        "--agent-name",
+        "claude"
+      ]
+    }
+  }
+}

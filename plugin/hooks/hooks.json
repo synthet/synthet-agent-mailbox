@@ -1,0 +1,75 @@
+{
+  "description": "agent-mail: inject unseen mail as untrusted data, gate and log sends, end the journal session.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/am.mjs\" hook inject --event SessionStart --harness claude-code",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/am.mjs\" hook inject --event UserPromptSubmit --harness claude-code",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/am.mjs\" hook inject --event Stop --harness claude-code",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__plugin_agent-mail_agent-mail__(send_message|mailbox_publish)|mcp__agent-mail__(send_message|mailbox_publish)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/am.mjs\" hook gate --harness claude-code",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__plugin_agent-mail_agent-mail__(send_message|mailbox_publish)|mcp__agent-mail__(send_message|mailbox_publish)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/am.mjs\" hook ledger --harness claude-code",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/am.mjs\" hook end",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

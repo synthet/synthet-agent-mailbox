@@ -1,0 +1,21 @@
+{
+  "name": "agent-mail",
+  "version": "0.1.0",
+  "description": "Wake Claude Code sessions on new agent-mail (ADR 0003, Phase 2): a watch monitor, inject/gate/ledger hooks, the agent-mail MCP server and a handling skill.",
+  "author": {
+    "name": "synthet"
+  },
+  "homepage": "https://github.com/synthet/synthet-agent-mailbox",
+  "repository": "https://github.com/synthet/synthet-agent-mailbox",
+  "license": "MIT",
+  "keywords": [
+    "agent-mail",
+    "mcp",
+    "hooks",
+    "monitor",
+    "peer-messaging"
+  ],
+  "experimental": {
+    "monitors": "./monitors/monitors.json"
+  }
+}

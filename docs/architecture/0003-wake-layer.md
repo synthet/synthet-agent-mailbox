@@ -106,6 +106,9 @@ Each phase is one or two PRs. Their issues are opened from this ADR once it is a
       only the peer itself can reach.
 - **Phase 2, wake:**
   - The two-PC trial (decision 4), then the chosen Claude path packaged in `plugin/`.
+    **As built:** path (a) is packaged first, in `plugin/` (monitor, inject/gate/ledger/end hooks, MCP
+    server with `--no-listen`, skill), so the trial runs against a real install. The monitor restarts
+    `watch` itself, since Claude Code doesn't document restarting an exited monitor.
   - Then the Codex adapter and the `codex queue` router action (decision 5).
 - **Phase 3, automation:** headless read-only responders for allowlisted question types only:
   versions, hashes, test status.
