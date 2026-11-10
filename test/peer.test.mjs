@@ -30,6 +30,14 @@ function message(a, b, text = "private message") {
     agent: { harness: "test", name: "Desktop", model: "fixture", session_id: "session-1" },
   });
 }
+// Let the OS pick the port: a random one can land in a range Windows reserves (bind EACCES).
+async function freeUdpPort() {
+  const socket = createSocket("udp4");
+  await new Promise((resolve, reject) => { socket.once("error", reject); socket.bind(0, "0.0.0.0", resolve); });
+  const { port } = socket.address();
+  await new Promise((resolve) => socket.close(resolve));
+  return port;
+}
 function pair(a, b, options = {}) {
   a.store.trust(publicIdentity(b.identity), fingerprint(b.identity), options.b);
   b.store.trust(publicIdentity(a.identity), fingerprint(a.identity), options.a);
@@ -175,7 +183,7 @@ test("agent-mail/1.1 routing fields are signed, round-trip, and are advertised a
 
 test("LAN discovery verifies nonce/signature, resolves peers and sends without an explicit endpoint", async (t) => {
   const { dir, a, b } = setup(t);
-  const options = { port: 49000 + Math.floor(Math.random() * 1000), group: "239.255.77.32", timeoutMs: 800, tailscale: false };
+  const options = { port: await freeUdpPort(), group: "239.255.77.32", timeoutMs: 800, tailscale: false };
   const alice = new Peer(a, join(dir, "a"), options);
   const bob = new Peer(b, join(dir, "b"), options);
   pair(alice, bob);
