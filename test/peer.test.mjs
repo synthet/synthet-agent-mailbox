@@ -440,3 +440,53 @@ test("a native-module mismatch becomes an actionable local-mailbox error", () =>
   const other = new Error("disk full");
   assert.equal(journalLoadError(other), other);
 });
+
+test("reply_to_message threads the reply and applies the automatic-reply loop guards", async (t) => {
+  const { dir, a, b } = setup(t);
+  const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
+  const bob = new Peer(b, join(dir, "b"), { timeoutMs: 50, tailscale: false });
+  let aliceIsOld = false;
+  const oldHandle = (req, res) => {
+    if (req.url !== "/capabilities" || !aliceIsOld) return false;
+    res.writeHead(404).end();
+    return true;
+  };
+  const aliceListener = await alice.listen({ port: 0, bind: "127.0.0.1", discovery: false, handle: oldHandle });
+  const bobListener = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false });
+  t.after(() => { aliceListener.close(); bobListener.close(); });
+  pair(alice, bob, { a: `http://127.0.0.1:${aliceListener.port}`, b: `http://127.0.0.1:${bobListener.port}` });
+  const fpA = fingerprint(a);
+  const received = (peer, id) => peer.store.get("inbox", (peer === alice ? fingerprint(b) : fpA) + ":" + id);
+
+  const question = await alice.send({ recipient: "Beta", text: "what version?", session_id: "alice-session" });
+  const manual = await bob.reply({ sender: fpA, message_id: question.message_id, text: "0.3.0" });
+  assert.equal(manual.status, "delivered");
+  const answer = received(alice, manual.message_id);
+  assert.equal(answer.conversation_id, question.conversation_id);
+  assert.equal(answer.in_reply_to, question.message_id);
+  assert.equal(answer.hop, 1);
+  assert.equal(answer.to_session, "alice-session");
+  assert.equal(answer.auto_reply, undefined);
+
+  const auto = await bob.reply({ sender: fpA, message_id: question.message_id, text: "0.3.0 (auto)", automatic: true });
+  assert.equal(auto.status, "delivered");
+  assert.equal(received(alice, auto.message_id).auto_reply, true);
+  await assert.rejects(bob.reply({ sender: fpA, message_id: question.message_id, text: "again", automatic: true }), /already has an automatic reply/);
+  const retry = await bob.reply({ sender: fpA, message_id: question.message_id, text: "0.3.0 (auto)", automatic: true, reply_id: auto.message_id });
+  assert.equal(retry.message_id, auto.message_id, "a retry with the same reply_id is allowed and deduplicated");
+
+  const automated = await alice.send({ recipient: "Beta", text: "status bot ping", auto_reply: true });
+  await assert.rejects(bob.reply({ sender: fpA, message_id: automated.message_id, text: "pong", automatic: true }), /itself an automatic reply/);
+  assert.equal((await bob.reply({ sender: fpA, message_id: automated.message_id, text: "a human answers" })).status, "delivered");
+
+  const deep = await alice.send({ recipient: "Beta", text: "deep", hop: 6 });
+  await assert.rejects(bob.reply({ sender: fpA, message_id: deep.message_id, text: "no", automatic: true }), /hop limit 6/);
+  const deepManual = await bob.reply({ sender: fpA, message_id: deep.message_id, text: "manual ok" });
+  assert.equal(received(alice, deepManual.message_id).hop, 7);
+
+  const plain = await alice.send({ recipient: "Beta", text: "from an old build" });
+  aliceIsOld = true;
+  const fresh = new Peer(b, join(dir, "b"), { timeoutMs: 50, tailscale: false });
+  await assert.rejects(fresh.reply({ sender: fpA, message_id: plain.message_id, text: "auto", automatic: true }), /does not accept agent-mail\/1\.1/);
+  await assert.rejects(bob.reply({ sender: fpA, message_id: randomUUID(), text: "x" }), /Unknown inbox message/);
+});
