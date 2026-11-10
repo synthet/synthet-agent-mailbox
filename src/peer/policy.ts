@@ -1,9 +1,53 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { fingerprint } from "./identity.js";
 import type { PeerStore, Contact } from "./store.js";
+
+/** Typed queries the dispatcher may answer from code (ADR 0004 decision 4). */
+export const QUERY_TYPES = ["version", "hash", "test_status"] as const;
+export type QueryType = (typeof QUERY_TYPES)[number];
+const isQueryType = (value: string): value is QueryType => (QUERY_TYPES as readonly string[]).includes(value);
+
+const absolutePath = z.string().min(1).refine((value) => isAbsolute(value), "must be an absolute path");
+
+const dispatchPeerSchema = z.object({
+  workspace: absolutePath.optional().describe("Where deterministic answers are computed and the responder runs"),
+  wake: z.object({
+    destination: z.string().min(1).describe("The local session to wake, e.g. its `claude --name` value"),
+    harness: z.enum(["claude", "codex"]),
+  }).strict().optional(),
+  auto_answer: z.array(z.enum(QUERY_TYPES)).default([]),
+  responder: z.object({
+    enabled: z.boolean().default(false),
+    // agy is excluded until its Windows empty-stdout bug (#76) is fixed.
+    harness: z.enum(["claude", "codex", "cursor"]),
+    model: z.string().min(1).optional(),
+  }).strict().optional(),
+}).strict().superRefine((peer, ctx) => {
+  if (peer.workspace !== undefined) return;
+  if (peer.auto_answer.length > 0) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspace"], message: "auto_answer needs a workspace" });
+  if (peer.responder?.enabled) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspace"], message: "an enabled responder needs a workspace" });
+});
+
+/** Dispatch settings (ADR 0004 decision 2). Off by default; only listed peers get anything. */
+const dispatchSchema = z.object({
+  enabled: z.boolean().default(false).describe("Kill switch for the whole dispatcher"),
+  swarm_command: absolutePath.optional().describe("synthet-agent-swarm executable; never looked up on PATH"),
+  limits: z.object({
+    concurrency: z.number().int().min(1).max(8).default(1),
+    per_peer_per_minute: z.number().int().min(1).max(60).default(2),
+    timeout_ms: z.number().int().min(5_000).max(600_000).default(60_000),
+    budget_usd: z.number().positive().max(5).default(0.25),
+  }).strict().default({}),
+  peers: z.record(z.string().regex(/^[0-9a-f]{64}$/, "peers are keyed by full lowercase fingerprint"), dispatchPeerSchema).default({}),
+}).strict().superRefine((dispatch, ctx) => {
+  if (dispatch.swarm_command !== undefined) return;
+  for (const [fp, peer] of Object.entries(dispatch.peers)) {
+    if (peer.responder?.enabled) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["peers", fp, "responder"], message: "an enabled responder needs dispatch.swarm_command" });
+  }
+});
 
 /**
  * Owner-written send policy at `<home>/policy.json` (ADR 0003, decision 6). There is no permissive
@@ -13,12 +57,43 @@ export const policySchema = z.object({
   allowed_peers: z.array(z.string().min(1)).describe("Peer names or full fingerprints that may receive mail"),
   max_bytes: z.number().int().min(1).max(64 * 1024),
   forbid_action_requests: z.boolean().default(false).describe("Opt-in: deny messages that ask a peer to push, delete or trust"),
-  auto_answer_types: z.array(z.string().min(1)).default([]),
+  auto_answer_types: z.array(z.string().min(1)).default([]).describe("Legacy alias: query types answered for every dispatch peer that has a workspace"),
+  dispatch: dispatchSchema.default({}),
 }).strict();
 export type Policy = z.infer<typeof policySchema>;
+type DispatchPeerPolicy = z.infer<typeof dispatchPeerSchema>;
 
 /** A starting policy that allows nobody. The owner adds peers by hand. */
-export const POLICY_TEMPLATE: Policy = { allowed_peers: [], max_bytes: 16384, forbid_action_requests: false, auto_answer_types: [] };
+export const POLICY_TEMPLATE: Policy = {
+  allowed_peers: [], max_bytes: 16384, forbid_action_requests: false, auto_answer_types: [],
+  dispatch: { enabled: false, limits: { concurrency: 1, per_peer_per_minute: 2, timeout_ms: 60_000, budget_usd: 0.25 }, peers: {} },
+};
+
+/** What the dispatcher may do for one peer, after the kill switch and the legacy alias are applied. */
+export interface DispatchPeer {
+  fingerprint: string;
+  workspace?: string;
+  wake?: DispatchPeerPolicy["wake"];
+  auto_answer: QueryType[];
+  /** Present only when the owner enabled it. */
+  responder?: NonNullable<DispatchPeerPolicy["responder"]>;
+}
+
+/** Null when dispatch is off or the peer isn't listed: the dispatcher then leaves the message alone. */
+export function dispatchPeer(policy: Policy, peerFingerprint: string): DispatchPeer | null {
+  if (!policy.dispatch.enabled) return null;
+  const fp = peerFingerprint.toLowerCase();
+  const peer = policy.dispatch.peers[fp];
+  if (!peer) return null;
+  const legacy = peer.workspace === undefined ? [] : policy.auto_answer_types.filter(isQueryType);
+  return {
+    fingerprint: fp,
+    ...(peer.workspace !== undefined ? { workspace: peer.workspace } : {}),
+    ...(peer.wake ? { wake: peer.wake } : {}),
+    auto_answer: [...new Set([...peer.auto_answer, ...legacy])],
+    ...(peer.responder?.enabled ? { responder: peer.responder } : {}),
+  };
+}
 
 export const policyPath = (home: string) => join(home, "policy.json");
 export const ledgerPath = (home: string) => join(home, "ledger.jsonl");
