@@ -111,11 +111,13 @@ function snapshot(home: string) {
     .sort((a, b) => b.message.created_at - a.message.created_at)
     .slice(0, 40);
 
-  const log = [...inbox.map((message) => ({ message, direction: "from" })), ...sent.map((message) => ({ message, direction: "to" })), ...outbox.map((message) => ({ message, direction: "queued" }))]
-    .sort((a, b) => a.message.created_at - b.message.created_at)
-    .slice(-40)
-    .map(({ message, direction }) => `${new Date(message.created_at).toISOString()} ${direction} ${nameOf(direction === "to" || direction === "queued" ? message.recipient : message.sender)} ${message.text}`)
-    .join("\n");
+  const peerLog = [...inbox.map((message) => ({ message, direction: "from" })), ...sent.map((message) => ({ message, direction: "to" })), ...outbox.map((message) => ({ message, direction: "queued" }))]
+    .map(({ message, direction }) => ({
+      at: message.created_at,
+      line: `${new Date(message.created_at).toISOString()} peer ${direction} ${nameOf(direction === "to" || direction === "queued" ? message.recipient : message.sender)} ${message.text}`,
+    }));
+  const joinLog = (lines: { at: number; line: string }[]) => lines.sort((a, b) => a.at - b.at).slice(-40).map((entry) => entry.line).join("\n");
+  const log = joinLog(peerLog);
 
   const view = {
     mode: "peer" as const,
@@ -124,13 +126,14 @@ function snapshot(home: string) {
     agent: { id: self.name },
     mailbox: { url: "peer", candidates: ["peer"], connected: true, fatal: null },
     wake: { mode: "off", client: "peer" },
-    agents: { agents: [{ id: self.name }, ...contacts.map((contact) => ({ id: contact.identity.name }))] },
+    agents: { agents: [{ id: self.name, source: "peer" }, ...contacts.map((contact) => ({ id: contact.identity.name, source: "peer" }))] },
     agents_error: null,
     remote: { inbox: { unread, stored: inbox.length }, tasks: { delivered: sent.length } },
     remote_error: null,
     local: { pending: outbox.length },
     recent: recent.map(({ message, status, direction }) => ({
       status,
+      source: "peer",
       message: {
         created_at: new Date(message.created_at).toISOString(),
         sender: direction === "sent" ? nameOf(message.recipient) : nameOf(message.sender),
@@ -151,9 +154,11 @@ function snapshot(home: string) {
   };
   const journal = readJournal(home);
   if (!journal) return view;
-  const known = journal.agents.some((agent) => agent.id === self.name || agent.id.startsWith(`${self.name} ·`));
+  // Merge the journal (same-PC mailbox) into the peer view instead of replacing it (#16), so a stale
+  // journal.db can't hide peer mail. Every row says which store it came from.
   const journalRecent = journal.messages.map((message) => ({
     status: "new",
+    source: "journal",
     message: {
       created_at: new Date(message.created_at).toISOString(),
       sender: message.sender,
@@ -162,13 +167,20 @@ function snapshot(home: string) {
       conversation_id: message.thread_id,
     },
   }));
+  const seenAgents = new Set(view.agents.agents.map((agent) => agent.id));
+  const journalAgents = journal.agents.filter((agent) => !seenAgents.has(agent.id)).map((agent) => ({ id: agent.id, source: "journal" }));
   return {
     ...view,
     journal: true,
-    agents: { agents: known ? journal.agents : [{ id: self.name }, ...journal.agents] },
-    remote: { inbox: { messages: journal.messageCount }, tasks: journal.tasks },
-    recent: journalRecent,
-    log: journal.messages.slice().reverse().map((message) => `${new Date(message.created_at).toISOString()} ${message.kind} ${message.sender} ${message.text}`).join("\n"),
+    agents: { agents: [...view.agents.agents, ...journalAgents] },
+    remote: { ...view.remote, journal: { messages: journal.messageCount, tasks: journal.tasks } },
+    recent: [...view.recent, ...journalRecent]
+      .sort((a, b) => Date.parse(b.message.created_at) - Date.parse(a.message.created_at))
+      .slice(0, 40),
+    log: joinLog([...peerLog, ...journal.messages.map((message) => ({
+      at: message.created_at,
+      line: `${new Date(message.created_at).toISOString()} journal ${message.kind} ${message.sender} ${message.text}`,
+    }))]),
   };
 }
 
