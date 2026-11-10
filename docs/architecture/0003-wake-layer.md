@@ -130,7 +130,8 @@ Each phase is one or two PRs. Their issues are opened from this ADR once it is a
    rejected by old discoverers until they upgrade. The options are an HTTP capability probe on the
    receiver port, cached per contact, or a receiver-first advert change. The lean is the probe:
    cache it per contact and refresh it when endpoint auto-refresh updates the address, so the strict
-   advert stays untouched. To be settled in the Phase 1 PR.
+   advert stays untouched. **Settled:** receivers answer `GET /capabilities` with
+   `{"envelope":["agent-mail/1.1"]}`; older builds answer 404, which means "don't send the fields".
 2. **#9 OQ-6 and OQ-7** (fixed status reply or none; whether message text may go to the routing
    vendor) stay open. They matter only if path (b) wins the trial.
 

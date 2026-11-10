@@ -172,6 +172,25 @@ test("LAN discovery verifies nonce/signature, resolves peers and sends without a
   assert.throws(() => parseAdvert(Buffer.from(JSON.stringify({ ...advert, signature: signed(a, advert.payload) })), "127.0.0.1", nonce));
 });
 
+test("agent-mail/1.1 routing fields are signed, round-trip, and are advertised at /capabilities", async (t) => {
+  const { dir, a, b } = setup(t);
+  const base = message(a, b);
+  const { signature, ...unsigned } = base;
+  const routed = signMessage(a, { ...unsigned, to_session: "codex-thread-7", hop: 2, auto_reply: true, in_reply_to: randomUUID() });
+  assert.equal(verifyMessage(publicIdentity(a), routed), true);
+  assert.equal(verifyMessage(publicIdentity(a), { ...routed, hop: 3 }), false, "hop is covered by the signature");
+  assert.equal(verifyMessage(publicIdentity(a), base), true, "messages without the fields still verify");
+  assert.deepEqual(unseal(b, seal(a, publicIdentity(b), routed), () => publicIdentity(a)), routed);
+  for (const bad of [{ hop: 17 }, { hop: -1 }, { to_session: "a\nb" }, { in_reply_to: "not-a-uuid" }, { auto_reply: "yes" }]) {
+    assert.throws(() => signMessage(a, { ...unsigned, ...bad }));
+  }
+  const bob = new Peer(b, join(dir, "b"), { timeoutMs: 50, tailscale: false });
+  const listener = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false });
+  t.after(() => listener.close());
+  const response = await fetch(`http://127.0.0.1:${listener.port}/capabilities`);
+  assert.deepEqual(await response.json(), { envelope: ["agent-mail/1.1"] });
+});
+
 test("Tailscale candidates include online IPv4/IPv6 peers only and never shell text", () => {
   assert.deepEqual(tailscaleAddresses({ Peer: {
     a: { Online: true, TailscaleIPs: ["100.64.0.1", "fd7a:115c:a1e0::1", "$(bad)"] },
