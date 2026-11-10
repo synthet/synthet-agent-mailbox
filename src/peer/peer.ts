@@ -133,13 +133,17 @@ export class Peer {
     }
     return false;
   }
+  /**
+   * The saved endpoint first, then discovered ones. A peer with several addresses (LAN and Tailscale,
+   * or two NICs) then keeps its saved address while it answers, instead of switching to whichever
+   * address discovery lists first on each send.
+   */
   private async endpointsFor(contact: Contact): Promise<string[]> {
     const recipient = fingerprint(contact.identity);
-    let endpoints: string[] = [];
-    try { endpoints = (await this.discover()).filter((p) => p.fingerprint === recipient).map((p) => p.endpoint); }
+    let discovered: string[] = [];
+    try { discovered = (await this.discover()).filter((p) => p.fingerprint === recipient).map((p) => p.endpoint); }
     catch { /* Explicit endpoints work even when multicast is unavailable. */ }
-    if (contact.endpoint && !endpoints.includes(contact.endpoint)) endpoints.push(contact.endpoint);
-    return preferLocalLoopback(endpoints);
+    return preferLocalLoopback([...(contact.endpoint ? [contact.endpoint] : []), ...discovered.filter((endpoint) => endpoint !== contact.endpoint)]);
   }
   private profileFor(args: SendOptions): AgentMeta | undefined {
     return agentProfile({

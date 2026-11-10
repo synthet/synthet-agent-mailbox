@@ -231,11 +231,12 @@ test("a changed endpoint clears the cached capabilities answer", async (t) => {
   const handle = (req) => { if (req.url === "/capabilities") probes++; return false; };
   const first = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false, handle });
   const second = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false, handle });
-  t.after(async () => { await first.close(); await second.close(); });
+  t.after(() => second.close());
   pair(alice, bob, { b: `http://127.0.0.1:${first.port}` });
   await alice.send({ recipient: "Zephyr", text: "one", hop: 0 });
   assert.equal(probes, 1);
   alice.discover = async () => [{ fingerprint: fingerprint(b), endpoint: `http://127.0.0.1:${second.port}` }];
+  await first.close(); // the saved address stops answering, so delivery moves
   const moved = await alice.send({ recipient: "Zephyr", text: "two", hop: 0 });
   assert.ok(moved.endpoint_changed, "delivery moved to the discovered address");
   await alice.send({ recipient: "Zephyr", text: "three", hop: 0 });
@@ -280,6 +281,23 @@ test("a verified receipt from a discovered address replaces the stale pinned end
   const again = await alice.send({ recipient: "Zephyr", text: "same address" });
   assert.equal(again.status, "delivered");
   assert.equal(again.endpoint_changed, undefined, "no change once the address is saved");
+});
+
+test("a saved endpoint that still answers is kept even when discovery lists another address first", async (t) => {
+  const { dir, a, b } = setup(t);
+  const alice = new Peer(a, join(dir, "a"), { timeoutMs: 50, tailscale: false });
+  const bob = new Peer(b, join(dir, "b"), { timeoutMs: 50, tailscale: false });
+  const saved = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false });
+  const other = await bob.listen({ port: 0, bind: "127.0.0.1", discovery: false });
+  t.after(async () => { await saved.close(); await other.close(); });
+  pair(alice, bob, { b: `http://127.0.0.1:${saved.port}` });
+  alice.discover = async () => [{ fingerprint: fingerprint(b), endpoint: `http://127.0.0.1:${other.port}` }];
+  for (const text of ["one", "two"]) {
+    const result = await alice.send({ recipient: "Zephyr", text });
+    assert.equal(result.status, "delivered");
+    assert.equal(result.endpoint_changed, undefined, text);
+  }
+  assert.equal(alice.store.contact(fingerprint(b)).endpoint, `http://127.0.0.1:${saved.port}`);
 });
 
 test("an address answered by a different key never replaces the pinned endpoint", async (t) => {
