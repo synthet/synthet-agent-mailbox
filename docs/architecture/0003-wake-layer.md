@@ -56,7 +56,7 @@ trust: pinning stays human-only through `agent-mail trust`.
      agent-flow remains the only claim model.
 4. **Claude wake path: undecided until measured (Jev `both_compare`, p 0.68, confidence 0.57).**
    Phase 2 opens with a two-PC trial of both paths:
-   - (a) A plugin monitor running `agent-mail watch --session <sid> --jsonl`.
+   - (a) A plugin monitor running `agent-mail watch --session <sid>`.
    - (b) The #9 design: on store, the listener starts a restricted `claude -p` (only ListAgents,
      SendMessage and ToolSearch; `--strict-mcp-config`) that sends a fixed notice to a session the
      owner configured per peer.
@@ -93,7 +93,10 @@ Each phase is one or two PRs. Their issues are opened from this ADR once it is a
 - **Phase 1, protocol and state:**
   - The version-gated envelope fields (decision 2).
   - Session heartbeat and end, with a TTL on `sessions.last_seen`.
-  - `watch --session <sid> --jsonl [--since <cursor>]`, with a heartbeat line.
+  - `watch --session <sid>` (JSONL output). **As built:** the watcher keeps its own seen file
+    instead of a `--since` cursor, so sender clock skew can't hide a message, and it starts from now
+    unless `--backlog`. Liveness goes to `journal.db` as a session heartbeat, not as a stdout line,
+    because under a Claude monitor every stdout line wakes the model.
   - `conversation_leases` (decision 3).
   - **Endpoint auto-refresh:** when a delivery to a discovered address returns a valid receipt from
     an already-pinned fingerprint, update that contact's endpoint, log `endpoint_changed` and flush

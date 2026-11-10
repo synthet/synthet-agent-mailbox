@@ -11,6 +11,10 @@ const MAX_BLOB = 4 * 1024 * 1024;
 const ALLOWED_TYPES = new Set(["text/plain", "text/markdown", "application/json", "application/yaml", "application/octet-stream"]);
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 const SESSION_RE = /^[^\r\n]{1,200}$/;
+/** A session counts as live this long after its last heartbeat (ADR 0003: 5-minute heartbeat, 10-minute TTL). */
+export const SESSION_TTL_MS = 10 * 60_000;
+/** A conversation lease lasts this long unless renewed or released (ADR 0003). */
+export const LEASE_TTL_MS = 30 * 60_000;
 
 export interface Actor { host_id: string; agent_id?: string; session_id?: string; harness?: string; model?: string }
 export interface SignedEvent {
@@ -102,6 +106,11 @@ export class Journal {
         state TEXT NOT NULL, claim_agent TEXT, fencing INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
       );
       INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ${Date.now()});
+      -- Which session answers a conversation. Not a task claim: agent-flow owns those (ADR 0002).
+      CREATE TABLE IF NOT EXISTS conversation_leases (
+        conversation_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, lease_until INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ${Date.now()});
     `);
   }
 
@@ -118,6 +127,76 @@ export class Journal {
       ON CONFLICT(session_id) DO UPDATE SET last_seen = excluded.last_seen, harness = excluded.harness, model = excluded.model`)
       .run(sessionId, agentId, input.harness ?? null, input.model ?? null, this.clock());
     return { agent_id: agentId, session_id: sessionId };
+  }
+
+  /**
+   * Mark a registered session alive and renew its unexpired conversation leases (ADR 0003: leases are
+   * renewed by heartbeat). Registering again also refreshes last_seen, but doesn't renew leases.
+   */
+  heartbeat(sessionId: string): { session_id: string; last_seen: number; leases_renewed: number } {
+    const session = this.mustSession(sessionId);
+    const now = this.clock();
+    const renewed = this.db.transaction(() => {
+      this.db.prepare("UPDATE sessions SET last_seen = ? WHERE session_id = ?").run(now, session.session_id);
+      return this.db.prepare("UPDATE conversation_leases SET lease_until = ? WHERE session_id = ? AND lease_until > ?").run(now + LEASE_TTL_MS, session.session_id, now).changes;
+    })();
+    return { session_id: session.session_id, last_seen: now, leases_renewed: renewed };
+  }
+
+  /**
+   * End a session: it stops counting as live and its conversation leases are released. The row stays,
+   * so the session's cursors and agent binding survive a later heartbeat.
+   */
+  endSession(sessionId: string): { session_id: string; released: number } {
+    const session = this.mustSession(sessionId);
+    const released = this.db.transaction(() => {
+      this.db.prepare("UPDATE sessions SET last_seen = 0 WHERE session_id = ?").run(session.session_id);
+      return this.db.prepare("DELETE FROM conversation_leases WHERE session_id = ?").run(session.session_id).changes;
+    })();
+    return { session_id: session.session_id, released };
+  }
+
+  liveSessions(ttlMs = SESSION_TTL_MS): { session_id: string; agent_id: string; harness: string | null; model: string | null; last_seen: number }[] {
+    return this.db.prepare(`SELECT session_id, agent_id, harness, model, last_seen FROM sessions
+      WHERE last_seen > 0 AND last_seen >= ? ORDER BY last_seen DESC, session_id`).all(this.clock() - ttlMs) as { session_id: string; agent_id: string; harness: string | null; model: string | null; last_seen: number }[];
+  }
+
+  /**
+   * Take or renew the lease on a conversation, so one session on this PC answers it. Another session's
+   * unexpired lease wins and is reported as lease_conflict. Claiming also counts as a heartbeat.
+   */
+  claimConversation(sessionId: string, conversationId: string, ttlMs = LEASE_TTL_MS): Record<string, unknown> {
+    const session = this.mustSession(sessionId);
+    const conversation = requiredId(conversationId, ID_RE, "conversation_id");
+    if (!Number.isInteger(ttlMs) || ttlMs < 1 || ttlMs > 24 * 60 * 60_000) throw new Error("Invalid lease ttl");
+    return this.db.transaction(() => {
+      const now = this.clock();
+      const held = this.db.prepare("SELECT session_id, lease_until FROM conversation_leases WHERE conversation_id = ?").get(conversation) as { session_id: string; lease_until: number } | undefined;
+      if (held && held.session_id !== session.session_id && held.lease_until > now) {
+        return { status: "lease_conflict", conversation_id: conversation, holder: held.session_id, lease_until: held.lease_until };
+      }
+      const leaseUntil = now + ttlMs;
+      this.db.prepare(`INSERT INTO conversation_leases (conversation_id, session_id, lease_until) VALUES (?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET session_id = excluded.session_id, lease_until = excluded.lease_until`).run(conversation, session.session_id, leaseUntil);
+      this.db.prepare("UPDATE sessions SET last_seen = ? WHERE session_id = ?").run(now, session.session_id);
+      const renewed = held?.session_id === session.session_id && held.lease_until > now;
+      return { status: renewed ? "renewed" : "leased", conversation_id: conversation, session_id: session.session_id, lease_until: leaseUntil };
+    })();
+  }
+
+  /** Release this session's lease. Releasing a lease the session doesn't hold changes nothing. */
+  releaseConversation(sessionId: string, conversationId: string): { conversation_id: string; released: boolean } {
+    const session = this.mustSession(sessionId);
+    const conversation = requiredId(conversationId, ID_RE, "conversation_id");
+    const changes = this.db.prepare("DELETE FROM conversation_leases WHERE conversation_id = ? AND session_id = ?").run(conversation, session.session_id).changes;
+    return { conversation_id: conversation, released: changes > 0 };
+  }
+
+  /** The session currently holding a conversation, or null when nobody holds an unexpired lease. */
+  conversationLease(conversationId: string): { conversation_id: string; session_id: string; lease_until: number } | null {
+    const conversation = requiredId(conversationId, ID_RE, "conversation_id");
+    const row = this.db.prepare("SELECT conversation_id, session_id, lease_until FROM conversation_leases WHERE conversation_id = ? AND lease_until > ?").get(conversation, this.clock()) as { conversation_id: string; session_id: string; lease_until: number } | undefined;
+    return row ?? null;
   }
 
   subscribe(sessionId: string, scopeId: string): { scope_id: string; agent_id: string } {
