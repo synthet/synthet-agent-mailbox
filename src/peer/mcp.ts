@@ -51,7 +51,7 @@ export function createPeerMcp(peer: Peer): McpServer {
   server.tool("mailbox_session_end", "End a session: it stops counting as live and its conversation leases are released.", {
     session_id: z.string().min(1).max(200),
   }, (args) => wrap(() => useJournal().endSession(args.session_id)));
-  server.tool("mailbox_lease_conversation", "Take or renew a 30-minute lease on a conversation so only this session answers it. Another session's lease returns lease_conflict. This is not a task claim; agent-flow owns task claims.", {
+  server.tool("mailbox_lease_conversation", "Take or renew a 30-minute lease on a conversation so only this session answers it. Another session's lease returns lease_conflict. This is not a task claim; agent-flow owns task claims. Leases are advisory routing state, not an access control: any local process can claim with any session_id.", {
     session_id: z.string().min(1).max(200), conversation_id: z.string().min(1).max(80),
   }, (args) => wrap(() => useJournal().claimConversation(args.session_id, args.conversation_id)));
   server.tool("mailbox_release_conversation", "Release this session's lease on a conversation.", {
