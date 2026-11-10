@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import Database from "better-sqlite3";
 import express, { type Request } from "express";
@@ -171,10 +172,58 @@ function snapshot(home: string) {
   };
 }
 
+export interface BuildInfo {
+  /** package.json version of the running build. */
+  app: string;
+  /** Short commit of the checkout when the server started, or null outside a git checkout. */
+  commit: string | null;
+  /** When this module was compiled (mtime of the running file), or null if unknown. */
+  built: string | null;
+}
+
+function readCommit(root: string): string | null {
+  try {
+    let gitDir = join(root, ".git");
+    if (statSync(gitDir).isFile()) {
+      const pointer = readFileSync(gitDir, "utf8").trim().replace(/^gitdir:\s*/, "");
+      gitDir = pointer.match(/^([A-Za-z]:|\/)/) ? pointer : join(root, pointer);
+    }
+    const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+    let sha = head;
+    if (head.startsWith("ref: ")) {
+      const ref = head.slice(5);
+      const common = existsSync(join(gitDir, "commondir"))
+        ? join(gitDir, readFileSync(join(gitDir, "commondir"), "utf8").trim()) : gitDir;
+      const loose = [join(gitDir, ref), join(common, ref)].find((file) => existsSync(file));
+      if (loose) sha = readFileSync(loose, "utf8").trim();
+      else {
+        const packed = existsSync(join(common, "packed-refs")) ? readFileSync(join(common, "packed-refs"), "utf8") : "";
+        sha = packed.split(/\r?\n/).find((line) => line.endsWith(` ${ref}`))?.split(" ")[0] ?? "";
+      }
+    }
+    return /^[0-9a-f]{40}$/.test(sha) ? sha.slice(0, 7) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Version of the running dashboard build, read once at startup without spawning git. */
+export function buildInfo(): BuildInfo {
+  const self = fileURLToPath(import.meta.url);
+  const root = join(dirname(self), "..", "..");
+  let app = "unknown";
+  try { app = String((JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string }).version ?? "unknown"); }
+  catch { /* keep "unknown" */ }
+  let built: string | null = null;
+  try { built = statSync(self).mtime.toISOString(); } catch { /* unknown */ }
+  return { app, commit: readCommit(root), built };
+}
+
 export async function startPeerDashboard(options: PeerDashboardOptions): Promise<RunningPeerDashboard> {
   if (!isLoopback(options.bind)) {
     throw new Error("The dashboard listens on loopback only.");
   }
+  const version = buildInfo();
   const app = express();
   app.disable("x-powered-by");
   app.get("/", (_req, res) => res.redirect("/dashboard"));
@@ -213,11 +262,12 @@ export async function startPeerDashboard(options: PeerDashboardOptions): Promise
       return;
     }
     try {
-      res.set("Cache-Control", "no-store").json(snapshot(options.home));
+      res.set("Cache-Control", "no-store").json({ ...snapshot(options.home), version });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.set("Cache-Control", "no-store").json({
         mode: "peer",
+        version,
         generated_at: new Date().toISOString(),
         agent: { id: "peer" },
         mailbox: { url: "peer", candidates: ["peer"], connected: false, fatal: message },
