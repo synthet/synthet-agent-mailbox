@@ -1,10 +1,11 @@
 import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { MAX_AUTO_HOP, type Peer } from "../peer/peer.js";
 import { appendLedger, checkOutbound, dispatchPeer, QUERY_TYPES, type DispatchPeer, type Policy, type QueryType } from "../peer/policy.js";
-import { SeenStore } from "../peer/seen.js";
+import { SeenStore, stripTags, UNTRUSTED_TAG } from "../peer/seen.js";
 import type { Contact } from "../peer/store.js";
 import type { PeerMessage } from "../peer/wire.js";
 import type { LiveSession } from "./journal.js";
@@ -13,8 +14,8 @@ import type { LiveSession } from "./journal.js";
  * `agent-mail dispatch` (ADR 0004): for each new peer message, answer a typed query from code, or wake
  * the live session that owns it with a metadata-only notice. The dispatcher never acknowledges a
  * message, never passes remote text to a wake, and takes every destination, tool and limit from
- * policy.json. The read-only responder (decision 4.4) is not built yet: with no live owner the message
- * is left in the inbox.
+ * policy.json. With no live owner, a peer whose responder is enabled gets a read-only swarm run whose
+ * reply the dispatcher checks and sends (decision 4.4); otherwise the message waits in the inbox.
  */
 
 export type WakeVia = "to_session" | "lease" | "destination";
@@ -24,7 +25,8 @@ export type WakeTarget =
 export type Decision =
   | { action: "skip"; reason: "peer_not_listed" | "rate_limited" | "hop_limit" | "no_live_owner" }
   | { action: "answer"; query: QueryType }
-  | { action: "wake"; target: WakeTarget };
+  | { action: "wake"; target: WakeTarget }
+  | { action: "respond" };
 
 export interface DispatchContext {
   /** False while the peer is over its per-minute limit. */
@@ -101,7 +103,10 @@ export function decide(message: Inbound, peer: DispatchPeer | null, context: Dis
   const query = message.auto_reply ? null : parseQuery(message.text);
   if (query && peer.workspace && peer.auto_answer.includes(query)) return { action: "answer", query };
   const target = route(message, peer, context);
-  return target ? { action: "wake", target } : { action: "skip", reason: "no_live_owner" };
+  if (target) return { action: "wake", target };
+  // An automatic message is never answered, by code or by a model.
+  if (peer.responder && !message.auto_reply) return { action: "respond" };
+  return { action: "skip", reason: "no_live_owner" };
 }
 
 /** Per-peer sliding one-minute window over the actions this process started. */
@@ -117,8 +122,13 @@ export class RateWindow {
 
 export interface WakeResult { outcome: "woken" | "no_match" | "failed" | "timeout"; cost_usd?: number }
 export interface Limits { timeout_ms: number; budget_usd: number }
+/** One `swarm_run` request in respond mode (synthet-agent-swarm `run --request`). */
+export interface SwarmRequest { task: string; harnesses: [string]; mode: "respond"; model?: string; timeoutMs: number; budgetUsd: number }
+/** `outcome` is the harness row's, not swarm's top-level ok, which is also true for permission denials. */
+export interface RespondResult { outcome: string; reply?: string; cost_usd?: number }
 export interface Runners {
   answer(query: QueryType, workspace: string): string;
+  respond(request: SwarmRequest, swarmCommand: string, workspace: string, limits: Limits): Promise<RespondResult>;
   claudeWake(name: string, notice: string, limits: Limits): Promise<WakeResult>;
   codexWake(thread: string, notice: string, limits: Limits): Promise<WakeResult>;
   toast(notice: string): Promise<void>;
@@ -126,13 +136,28 @@ export interface Runners {
 
 export interface DispatchRecord {
   message_id: string; conversation_id: string; peer: string;
-  step: "skip" | "answer" | "wake";
+  step: "skip" | "answer" | "wake" | "respond";
   detail: string;
 }
 
 interface JournalLike {
   sessionDirectory(): LiveSession[];
   conversationLease(conversationId: string): { session_id: string } | null;
+  registerSession(input: { session_id: string; alias?: string; harness?: string }): unknown;
+  claimConversation(sessionId: string, conversationId: string): Record<string, unknown>;
+  endSession(sessionId: string): unknown;
+}
+
+/** Room left in swarm's 8000-character task for the quoted message. */
+const RESPONDER_TEXT_LIMIT = 6000;
+
+/** The responder's task: remote text only inside the untrusted tag, with closing tags inside it removed. */
+export function responderTask(message: Pick<PeerMessage, "id" | "conversation_id" | "text">, label: string | null | undefined): string | null {
+  if (message.text.length > RESPONDER_TEXT_LIMIT) return null;
+  const from = label && SAFE_LABEL.test(label) ? label : "a paired peer";
+  return "A paired agent on another PC sent the message below to this machine's agent mailbox, and no session here is available "
+    + "to answer it. Write a short reply using only what you can read in this workspace. If you can't answer, say so in one sentence.\n"
+    + `<${UNTRUSTED_TAG} from="${from}" thread="${message.conversation_id}" id="${message.id}">\n${stripTags(message.text)}\n</${UNTRUSTED_TAG}>`;
 }
 
 /**
@@ -181,6 +206,7 @@ export async function dispatchOnce(deps: {
 
     if (decision.action === "skip") { record("skip", decision.reason); continue; }
     rate.record(message.sender, now());
+    if (decision.action === "respond") { await respond(message, config!, record); continue; }
     if (decision.action === "answer") {
       const workspace = config!.workspace!;
       let text: string;
@@ -214,6 +240,53 @@ export async function dispatchOnce(deps: {
     record("wake", detail, { harness: target.harness, ...(result.cost_usd !== undefined ? { cost_usd: result.cost_usd } : {}) });
   }
   return records;
+
+  async function respond(message: PeerMessage, config: DispatchPeer, record: (step: DispatchRecord["step"], detail: string, extra?: { harness?: string | null; cost_usd?: number }) => void) {
+    const responder = config.responder!;
+    const task = responderTask(message, peer.store.get<Contact>("contacts", message.sender)?.identity.name);
+    if (!task) { record("respond", "message too long for the responder", { harness: responder.harness }); return; }
+    // Hold the conversation for this run, so an interactive session and the responder can't both answer.
+    const session = `dispatch:${randomUUID()}`;
+    const journal = deps.journal;
+    if (journal) {
+      try {
+        journal.registerSession({ session_id: session, alias: "dispatch", harness: "dispatch" });
+        const lease = journal.claimConversation(session, message.conversation_id);
+        if (lease.status === "lease_conflict") {
+          journal.endSession(session);
+          record("respond", `lease held by ${String(lease.holder)}`, { harness: responder.harness });
+          return;
+        }
+      } catch (error) { record("respond", `lease failed: ${errorText(error)}`, { harness: responder.harness }); return; }
+    }
+    try {
+      const limits = policy.dispatch.limits;
+      const request: SwarmRequest = {
+        task, harnesses: [responder.harness], mode: "respond", timeoutMs: limits.timeout_ms, budgetUsd: limits.budget_usd,
+        ...(responder.model ? { model: responder.model } : {}),
+      };
+      let result: RespondResult;
+      try { result = await runners.respond(request, policy.dispatch.swarm_command!, config.workspace!, limits); }
+      catch (error) { result = { outcome: `error: ${errorText(error)}` }; }
+      const extra = { harness: responder.harness, ...(result.cost_usd !== undefined ? { cost_usd: result.cost_usd } : {}) };
+      if (result.outcome !== "ok" || !result.reply?.trim()) {
+        record("respond", `${responder.harness}: ${result.outcome === "ok" ? "empty reply" : result.outcome}`, extra);
+        return;
+      }
+      const verdict = checkOutbound({ tool: "dispatch", recipient: message.sender, text: result.reply }, policy, peer.store);
+      if (verdict.decision === "deny") { record("respond", `${responder.harness} reply blocked: ${verdict.reason}`, extra); return; }
+      try {
+        const sent = await peer.reply({ sender: message.sender, message_id: message.id, text: result.reply, automatic: true });
+        record("respond", `${responder.harness} ${sent.status}`, extra);
+        appendLedger(home, {
+          session: null, harness: responder.harness, tool: "dispatch:reply", peer: message.sender, conversation_id: message.conversation_id,
+          message_id: sent.message_id, decision: sent.status, body: result.reply,
+        });
+      } catch (error) { record("respond", `${responder.harness} refused: ${errorText(error)}`, extra); }
+    } finally {
+      try { journal?.endSession(session); } catch { /* the lease expires on its own */ }
+    }
+  }
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error)).split("\n")[0];
@@ -238,9 +311,13 @@ export function computeAnswer(query: QueryType, workspace: string): string {
 interface RunResult { code: number | null; stdout: string; stderr: string; timedOut: boolean }
 
 /** Runs a child with a timeout that kills its whole process tree. */
-export function runWithTimeout(command: string, args: string[], options: { timeoutMs: number; env?: NodeJS.ProcessEnv; shell?: boolean }): Promise<RunResult> {
+export function runWithTimeout(command: string, args: string[], options: { timeoutMs: number; env?: NodeJS.ProcessEnv; shell?: boolean; cwd?: string; input?: string }): Promise<RunResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { shell: options.shell ?? false, windowsHide: true, env: options.env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      shell: options.shell ?? false, windowsHide: true, env: options.env, cwd: options.cwd, detached: process.platform !== "win32",
+      stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
+    if (options.input !== undefined) { child.stdin!.on("error", () => { /* the child exited early */ }); child.stdin!.end(options.input); }
     let stdout = "", stderr = "", timedOut = false, settled = false;
     const finish = (code: number | null) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ code, stdout, stderr, timedOut }); } };
     const timer = setTimeout(() => {
@@ -251,8 +328,8 @@ export function runWithTimeout(command: string, args: string[], options: { timeo
       } catch { /* already gone */ }
       finish(null);
     }, options.timeoutMs);
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout = (stdout + chunk).slice(-100_000); });
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-20_000); });
+    child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { stdout = (stdout + chunk).slice(-100_000); });
+    child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-20_000); });
     child.on("error", () => finish(-1));
     child.on("close", (code) => finish(code));
   });
@@ -271,8 +348,41 @@ export function claudeWakeArgs(name: string, notice: string, budgetUsd: number):
     "--disable-slash-commands", "--max-budget-usd", String(budgetUsd), "--output-format", "json"];
 }
 
+/** How to start swarm_command: a .js entry runs under this Node; a .cmd shim needs a shell on Windows. */
+export function swarmInvocation(command: string): { file: string; args: string[]; shell: boolean } | null {
+  const args = ["run", "--request", "-"];
+  if (/\.(c|m)?js$/i.test(command)) return { file: process.execPath, args: [command, ...args], shell: false };
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(command)) {
+    if (!/^[\w :\\/.()-]+$/.test(command)) return null;
+    return { file: `"${command}"`, args, shell: true };
+  }
+  return { file: command, args, shell: false };
+}
+
 export const defaultRunners: Runners = {
   answer: computeAnswer,
+  async respond(request, swarmCommand, workspace, limits) {
+    const invocation = swarmInvocation(swarmCommand);
+    if (!invocation) return { outcome: "error: swarm_command path has shell-sensitive characters" };
+    // The request, and with it the remote text, goes over stdin: never on argv and never in a file here.
+    const result = await runWithTimeout(invocation.file, invocation.args, {
+      timeoutMs: limits.timeout_ms + 5_000, shell: invocation.shell, cwd: workspace,
+      env: { ...cleanEnv(), WORKSPACE_ROOT: workspace }, input: JSON.stringify(request),
+    });
+    if (result.timedOut) return { outcome: "timeout" };
+    // One JSON object on stdout; accept it pretty-printed or as the last line after any log output.
+    const parse = (text: string) => { try { return JSON.parse(text) as unknown; } catch { return null; } };
+    const out = result.stdout.trim();
+    const parsed = parse(out) ?? parse(out.split("\n").filter(Boolean).at(-1) ?? "");
+    if (!parsed || typeof parsed !== "object") return { outcome: `error: swarm exited ${result.code} without a JSON result` };
+    const response = parsed as { reply?: unknown; harnesses?: { outcome?: unknown; costUsd?: unknown }[] };
+    const row = response.harnesses?.[0];
+    return {
+      outcome: typeof row?.outcome === "string" ? row.outcome : "error",
+      ...(typeof response.reply === "string" ? { reply: response.reply } : {}),
+      ...(typeof row?.costUsd === "number" ? { cost_usd: row.costUsd } : {}),
+    };
+  },
   async claudeWake(name, notice, limits) {
     // A missing or duplicated name costs nothing: check before spawning a model run.
     const listing = await runWithTimeout("claude", ["agents", "--json"], { timeoutMs: 20_000, env: cleanEnv() });
