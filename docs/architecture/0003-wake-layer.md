@@ -1,7 +1,7 @@
 # ADR 0003 — Wake layer: deliver mail to the session that should answer it
 
 Date: 2026-11-09
-Status: Proposed. TridentX drafted it; Zephyr reviews; the owner accepts.
+Status: Accepted (2026-11-09, owner). TridentX drafted it; Zephyr reviewed it in #11.
 
 ## Context
 
@@ -11,8 +11,10 @@ showed up in daily two-PC use (TridentX and Zephyr, both Windows):
 - **Replies wait until someone polls.** An answer can sit in the inbox for hours, because an idle
   Claude Code or Codex session never looks. `mailbox_poll` and `digest` are reads, not wakes.
 - **Pinned endpoints go stale.** `PeerStore.trust()` is the only writer of `contacts/<fp>.endpoint`.
-  `Peer.deliver()` re-discovers on every send but never saves the result, so `retry_outbox` kept
-  hitting a dead address while a fresh `send` worked.
+  `send` and `flush()` (behind `retry_outbox`) both call `Peer.deliver()`. It tries discovered
+  endpoints first and then the pinned one, but never saves a discovered address that worked. So
+  whenever discovery misses the peer (a lost multicast reply, a probe timeout), every send or retry
+  falls back to a stale pin.
 - **Several sessions share one peer identity.** The sender's `agent.session_id` is signed, but
   nothing addresses a session or says which session owns a thread.
 
@@ -69,6 +71,9 @@ trust: pinning stays human-only through `agent-mail trust`.
 6. **Send policy.** `~/.agent-mail/policy.json` (peer allowlist, size cap, auto-answer types,
    rate limits) feeds a PreToolUse send gate that fails closed and an append-only
    `~/.agent-mail/ledger.jsonl`.
+   - The ledger stores `sha256(body)` plus metadata (ts, session, harness, tool, peer,
+     conversation_id, message_id, decision), never message bodies, so it isn't a second plaintext
+     copy of the mail.
    - Remote text reaching a model is wrapped in `<untrusted-remote-message>` with nested closing tags
      stripped.
    - Confirm hook matchers against the scoped MCP tool names with a dry-run PreToolUse logger before
@@ -92,15 +97,20 @@ Each phase is one or two PRs. Their issues are opened from this ADR once it is a
   - `conversation_leases` (decision 3).
   - **Endpoint auto-refresh:** when a delivery to a discovered address returns a valid receipt from
     an already-pinned fingerprint, update that contact's endpoint, log `endpoint_changed` and flush
-    the outbox. Never pin a new fingerprint. `retry_outbox` re-discovers before falling back to the
-    pinned address.
+    the outbox. Never pin a new fingerprint.
+    - Save only the address that actually returned the receipt, never every address in an advert.
+      Peers also advertise virtual-adapter (172.x vEthernet/WSL) and link-local IPv6 addresses that
+      only the peer itself can reach.
 - **Phase 2, wake:**
   - The two-PC trial (decision 4), then the chosen Claude path packaged in `plugin/`.
   - Then the Codex adapter and the `codex queue` router action (decision 5).
 - **Phase 3, automation:** headless read-only responders for allowlisted question types only:
   versions, hashes, test status.
-  - Claude: `claude -p --resume <sid> --permission-mode dontAsk` with an explicit `--allowedTools`
-    list, never `--bare`.
+  - Claude: `claude -p --permission-mode dontAsk` with an explicit `--allowedTools` list, never
+    `--bare`.
+  - Don't `--resume` the session id of a live interactive session from a worker: two writers on one
+    transcript could interleave. Use `--fork-session` or a fresh session and record the lease on the
+    new id, unless a spike first shows `--resume` on a live session is safe.
   - Codex: `codex exec --sandbox read-only`.
   - Loop guards: never reply to `auto_reply=true`; stop at `hop` 6; per-thread rate and budget caps;
     escalate to the owner when a lease expires unanswered.
@@ -118,15 +128,16 @@ Each phase is one or two PRs. Their issues are opened from this ADR once it is a
 1. **Where a receiver advertises that it accepts the new fields.** The discovery advert
    (`advertSchema` in `src/peer/discovery.ts`) is also `.strict()`. A new advert field would be
    rejected by old discoverers until they upgrade. The options are an HTTP capability probe on the
-   receiver port, cached per contact, or a receiver-first advert change. To be settled in the
-   Phase 1 PR.
+   receiver port, cached per contact, or a receiver-first advert change. The lean is the probe:
+   cache it per contact and refresh it when endpoint auto-refresh updates the address, so the strict
+   advert stays untouched. To be settled in the Phase 1 PR.
 2. **#9 OQ-6 and OQ-7** (fixed status reply or none; whether message text may go to the routing
    vendor) stay open. They matter only if path (b) wins the trial.
 
 ## Prerequisites outside this repo
 
-- **Codex CLI 0.166 or later on both PCs** for `codex queue --resume`. TridentX runs 0.167.0;
-  Zephyr runs 0.161.0.
+- **Codex CLI 0.166 or later on both PCs** for `codex queue --resume`. TridentX runs 0.167.0
+  (upgraded from 0.160.0 on 2026-11-09; `codex --version` confirms it). Zephyr runs 0.161.0.
 - **Rebuild and restart:** Zephyr's running `dist/` predates `378d2e8`, so rebuild and restart its
   listener, tray and MCP servers before the Phase 1 two-PC checks.
 
