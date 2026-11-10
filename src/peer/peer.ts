@@ -6,7 +6,7 @@ import { advertisement, advertise, discover, discoverTailscale, type DiscoveryOp
 import { fingerprint, publicIdentity, type Identity } from "./identity.js";
 import { agentProfile, localOrigin, type AgentDefaults, type AgentMeta } from "./metadata.js";
 import { PeerStore, validateEndpoint, type Contact } from "./store.js";
-import { messageSchema, receipt, seal, signMessage, unseal, verifyReceipt, type PeerMessage } from "./wire.js";
+import { ENVELOPE_VERSION, messageSchema, receipt, seal, signMessage, unseal, verifyReceipt, type PeerMessage } from "./wire.js";
 
 export const peerSendShape = {
   recipient: z.string().min(1).describe("Trusted name or full public-key fingerprint"),
@@ -170,6 +170,12 @@ export class Peer {
           const port = (server.address() as { port: number }).port;
           res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(advertisement(this.identity, port, nonce)));
         } catch { res.writeHead(400).end(); }
+        return;
+      }
+      if (req.method === "GET" && req.url === "/capabilities") {
+        // Unsigned on purpose: a forged answer can only make a sender include fields this receiver
+        // then rejects, which leaves the message queued. Older builds answer 404.
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ envelope: [ENVELOPE_VERSION] }));
         return;
       }
       if (req.method !== "POST" || req.url !== "/message") { res.writeHead(404).end(); return; }
