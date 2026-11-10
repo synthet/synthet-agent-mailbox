@@ -142,3 +142,17 @@ test("session and lease CLI: lease_conflict exits 2", (t) => {
   assert.equal(JSON.parse(run("session", "end", "--session", "a").stdout).released, 1);
   assert.equal(JSON.parse(run("lease", "show", "--conversation", conv).stdout).lease, null);
 });
+
+test("reads never create journal.db: CLI digest, session list, lease show (#16)", (t) => {
+  const { home } = setup(t);
+  const run = (...args) => spawnSync(process.execPath, ["dist/cli.js", ...args, "--home", home], { encoding: "utf8" });
+  const digest = run("digest", "--session", "x");
+  assert.equal(digest.status, 0, digest.stderr);
+  assert.match(JSON.parse(digest.stdout).warning, /No journal\.db yet/);
+  assert.notEqual(run("session", "list").status, 0);
+  assert.notEqual(run("lease", "show", "--conversation", randomUUID()).status, 0);
+  assert.notEqual(run("publish", "--session", "x", "--text", "hi").status, 0);
+  assert.equal(existsSync(join(home, "journal.db")), false);
+  assert.equal(run("register", "--session", "x").status, 0, "register still creates it");
+  assert.equal(existsSync(join(home, "journal.db")), true);
+});
