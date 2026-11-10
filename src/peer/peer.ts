@@ -26,6 +26,19 @@ export const peerSendShape = {
   in_reply_to: z.string().uuid().optional().describe("Message id this one answers (agent-mail/1.1)."),
 };
 const ROUTING_FIELDS = ["to_session", "hop", "auto_reply", "in_reply_to"] as const;
+/** ADR 0003 loop guard: an automatic reply is refused once the exchange reaches this depth. */
+export const MAX_AUTO_HOP = 6;
+const MAX_HOP = 16;
+
+export const peerReplyShape = {
+  sender: z.string().regex(/^[a-f0-9]{64}$/).describe("Fingerprint of the peer that sent the message being answered"),
+  message_id: z.string().uuid().describe("Id of the received message being answered"),
+  text: z.string().min(1).max(64 * 1024),
+  automatic: z.boolean().default(false)
+    .describe("True when no human wrote or approved this reply. Sent as auto_reply, which receivers never answer automatically."),
+  reply_id: z.string().uuid().optional().describe("Reuse on retry to avoid a duplicate reply"),
+};
+export type ReplyOptions = z.input<z.ZodObject<typeof peerReplyShape>>;
 /** How long a definite /capabilities answer is reused before the next probe. */
 const CAPABILITY_TTL_MS = 10 * 60_000;
 export type SendOptions = z.infer<z.ZodObject<typeof peerSendShape>>;
@@ -206,6 +219,35 @@ export class Peer {
     } catch (error) {
       return { status: "queued", message_id: message.id, conversation_id: message.conversation_id, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+  /**
+   * Answer a received message. The conversation, in_reply_to, hop and to_session (the sender's own
+   * session) come from the stored message, never from the caller. Automatic replies are refused when
+   * the message was itself automatic, when the exchange is MAX_AUTO_HOP deep, when this message already
+   * has an automatic reply, or when the peer would not receive the auto_reply flag.
+   */
+  async reply(input: ReplyOptions) {
+    const args = z.object(peerReplyShape).strict().parse(input);
+    const original = this.store.get<PeerMessage>("inbox", args.sender + ":" + args.message_id);
+    if (!original) throw new Error("Unknown inbox message");
+    const hop = Math.min((original.hop ?? 0) + 1, MAX_HOP);
+    if (args.automatic) {
+      if (original.auto_reply) throw new Error("reply_refused: the message is itself an automatic reply");
+      if ((original.hop ?? 0) >= MAX_AUTO_HOP) throw new Error(`reply_refused: hop limit ${MAX_AUTO_HOP} reached`);
+      const answered = [...this.store.list<PeerMessage>("sent"), ...this.store.list<PeerMessage>("outbox")]
+        .some((m) => m.in_reply_to === original.id && m.auto_reply === true && m.id !== args.reply_id);
+      if (answered) throw new Error("reply_refused: this message already has an automatic reply");
+      if (!await this.acceptsEnvelope(this.store.contact(original.sender))) {
+        throw new Error("reply_refused: the peer does not accept agent-mail/1.1, so it would not see auto_reply");
+      }
+    }
+    const result = await this.send({
+      recipient: original.sender, text: args.text, conversation_id: original.conversation_id,
+      message_id: args.reply_id, in_reply_to: original.id, hop,
+      ...(args.automatic ? { auto_reply: true } : {}),
+      ...(original.agent?.session_id ? { to_session: original.agent.session_id } : {}),
+    });
+    return { ...result, in_reply_to: original.id, hop, auto_reply: args.automatic };
   }
   async flush() {
     const results = [];
