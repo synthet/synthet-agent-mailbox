@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import Database from "better-sqlite3";
 import { initIdentity, publicIdentity, fingerprint } from "../dist/peer/identity.js";
 import { Peer } from "../dist/peer/peer.js";
 import { signMessage } from "../dist/peer/wire.js";
@@ -94,7 +95,7 @@ test("leases survive reopening journal.db, which gains the table on an existing 
   first.close();
   const again = new Journal(home, me);
   assert.equal(again.conversationLease(conv).session_id, "a");
-  assert.deepEqual(again.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all().map((r) => r.version), [1, 2]);
+  assert.deepEqual(again.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all().map((r) => r.version), [1, 2, 3]);
   again.close();
 });
 
@@ -141,6 +142,46 @@ test("session and lease CLI: lease_conflict exits 2", (t) => {
   assert.equal(JSON.parse(run("session", "list").stdout).length, 2);
   assert.equal(JSON.parse(run("session", "end", "--session", "a").stdout).released, 1);
   assert.equal(JSON.parse(run("lease", "show", "--conversation", conv).stdout).lease, null);
+});
+
+test("sessions record how to reach them, and the directory lists live sessions with their leases", (t) => {
+  const { home, me, clock } = setup(t);
+  const journal = new Journal(home, me, clock.now);
+  journal.registerSession({
+    session_id: "claude-1", alias: "claude", harness: "claude",
+    harness_session_id: "89e4e4be-1815-4d65-ae07-66c2f91a37bb", display_name: "mailbox-dev", workspace: "D:/Projects/x",
+  });
+  journal.registerSession({ session_id: "codex-1", alias: "codex", harness: "codex" });
+  const conv = randomUUID();
+  journal.claimConversation("claude-1", conv);
+  const directory = journal.sessionDirectory();
+  const claude = directory.find((s) => s.session_id === "claude-1");
+  assert.equal(claude.alias, "claude");
+  assert.equal(claude.harness_session_id, "89e4e4be-1815-4d65-ae07-66c2f91a37bb");
+  assert.equal(claude.display_name, "mailbox-dev");
+  assert.equal(claude.workspace, "D:/Projects/x");
+  assert.deepEqual(claude.leases.map((l) => l.conversation_id), [conv]);
+  const codex = directory.find((s) => s.session_id === "codex-1");
+  assert.equal(codex.harness_session_id, null);
+  assert.deepEqual(codex.leases, []);
+  assert.throws(() => journal.registerSession({ session_id: "x", display_name: "bad\nname" }), /Invalid display_name/);
+  journal.endSession("claude-1");
+  assert.deepEqual(journal.sessionDirectory().map((s) => s.session_id), ["codex-1"]);
+  journal.close();
+});
+
+test("a journal created before v3 gains the session columns on open", (t) => {
+  const { home, me } = setup(t);
+  const legacy = new Database(join(home, "journal.db"));
+  legacy.exec("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, harness TEXT, model TEXT, last_seen INTEGER NOT NULL)");
+  legacy.prepare("INSERT INTO sessions VALUES ('old', 'agent', 'codex', NULL, 1)").run();
+  legacy.close();
+  const journal = new Journal(home, me);
+  const columns = journal.db.prepare("PRAGMA table_info(sessions)").all().map((c) => c.name);
+  for (const column of ["harness_session_id", "display_name", "workspace"]) assert.ok(columns.includes(column), column);
+  journal.registerSession({ session_id: "new", harness_session_id: "t-1" });
+  assert.equal(journal.liveSessions().find((s) => s.session_id === "new").harness_session_id, "t-1");
+  journal.close();
 });
 
 test("reads never create journal.db: CLI digest, session list, lease show (#16)", (t) => {
