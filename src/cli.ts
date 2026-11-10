@@ -53,6 +53,8 @@ const help = `agent-mail — direct encrypted peer messaging (no mailbox or adap
   hook gate                             PreToolUse send gate for send_message/mailbox_publish:
                                         denies secrets, unlisted peers, oversize; fails closed
   hook ledger                           PostToolUse: append metadata + sha256 to ledger.jsonl
+  hook end                              SessionEnd: end the journal session named by session_id
+                                        and release its leases; creates nothing, never fails
   policy init|check                     Write a deny-all policy.json / validate it
   session heartbeat|end|list [--session ID]
                                         Keep a journal session live (10 min TTL), end it
@@ -268,13 +270,26 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         if (response) console.log(JSON.stringify(response));
         break;
       }
+      if (argument === "end") {
+        // SessionEnd: end this session in the journal and release its conversation leases. Only an existing
+        // journal and a registered session are touched; nothing is created.
+        try {
+          const sessionId = String(parsed().session_id ?? "");
+          if (sessionId && existsSync(join(home, "journal.db"))) {
+            const journal = openJournal(home);
+            try { journal.endSession(sessionId); } catch { /* not a registered session: nothing to end */ }
+            finally { journal.close(); }
+          }
+        } catch (error) { console.error(`agent-mail hook end: ${error instanceof Error ? error.message : String(error)}`); }
+        break;
+      }
       if (argument === "ledger") {
         try { ledgerHook(parsed() as ToolHookInput, home, values.harness ?? null); }
         catch (error) { console.error(`agent-mail hook ledger: ${error instanceof Error ? error.message : String(error)}`); }
         break;
       }
       try {
-        if (argument !== "inject") throw new Error("Use: hook inject|gate|ledger");
+        if (argument !== "inject") throw new Error("Use: hook inject|gate|ledger|end");
         const input = parsed() as HookInput;
         const event = values.event ?? input.hook_event_name ?? "";
         const journal = existsSync(join(home, "journal.db")) ? openJournal(home) : undefined;
