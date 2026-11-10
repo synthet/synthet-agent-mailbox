@@ -11,6 +11,38 @@ const MAX_BLOB = 4 * 1024 * 1024;
 const ALLOWED_TYPES = new Set(["text/plain", "text/markdown", "application/json", "application/yaml", "application/octet-stream"]);
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 const SESSION_RE = /^[^\r\n]{1,200}$/;
+export interface SessionRegistration {
+  session_id: string;
+  alias?: string;
+  harness?: string;
+  model?: string;
+  /** The harness's own id: Claude session, Codex thread, Cursor chat, Antigravity conversation. */
+  harness_session_id?: string;
+  /** Name the harness shows for the session, such as `claude --name`. */
+  display_name?: string;
+  /** Working directory of the session. */
+  workspace?: string;
+}
+
+export interface LiveSession {
+  session_id: string;
+  agent_id: string;
+  harness: string | null;
+  model: string | null;
+  last_seen: number;
+  harness_session_id: string | null;
+  display_name: string | null;
+  workspace: string | null;
+}
+
+function optionalText(value: string | undefined, max: number, label: string): string | null {
+  if (value === undefined) return null;
+  const text = value.trim();
+  if (!text) return null;
+  if (text.length > max || /[\u0000-\u001f\u007f]/.test(text)) throw new Error(`Invalid ${label}`);
+  return text;
+}
+
 /** A session counts as live this long after its last heartbeat (ADR 0003: 5-minute heartbeat, 10-minute TTL). */
 export const SESSION_TTL_MS = 10 * 60_000;
 /** A conversation lease lasts this long unless renewed or released (ADR 0003). */
@@ -112,10 +144,19 @@ export class Journal {
       );
       INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ${Date.now()});
     `);
+    // v3: where a session can be reached. A dispatcher wakes or resumes it by these, never by message text.
+    const columns = new Set((this.db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name));
+    for (const column of ["harness_session_id", "display_name", "workspace"]) {
+      if (!columns.has(column)) this.db.exec(`ALTER TABLE sessions ADD COLUMN ${column} TEXT`);
+    }
+    this.db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?)").run(Date.now());
   }
 
-  registerSession(input: { session_id: string; alias?: string; harness?: string; model?: string }): { agent_id: string; session_id: string } {
+  registerSession(input: SessionRegistration): { agent_id: string; session_id: string } {
     const sessionId = requiredId(input.session_id, SESSION_RE, "session_id");
+    const harnessSessionId = optionalText(input.harness_session_id, 200, "harness_session_id");
+    const displayName = optionalText(input.display_name, 80, "display_name");
+    const workspace = optionalText(input.workspace, 400, "workspace");
     const alias = (input.alias?.trim() || this.identity.name).slice(0, 80);
     if (!alias) throw new Error("Agent alias is empty");
     const existingAlias = this.db.prepare("SELECT agent_id FROM agents WHERE host_id = ? AND alias = ?").get(this.hostId, alias) as { agent_id: string } | undefined;
@@ -123,9 +164,11 @@ export class Journal {
     this.ensureAgent(agentId, alias);
     const prior = this.db.prepare("SELECT agent_id FROM sessions WHERE session_id = ?").get(sessionId) as { agent_id: string } | undefined;
     if (prior && prior.agent_id !== agentId) throw new Error("Session is already registered to another agent");
-    this.db.prepare(`INSERT INTO sessions (session_id, agent_id, harness, model, last_seen) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET last_seen = excluded.last_seen, harness = excluded.harness, model = excluded.model`)
-      .run(sessionId, agentId, input.harness ?? null, input.model ?? null, this.clock());
+    this.db.prepare(`INSERT INTO sessions (session_id, agent_id, harness, model, last_seen, harness_session_id, display_name, workspace)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET last_seen = excluded.last_seen, harness = excluded.harness, model = excluded.model,
+        harness_session_id = excluded.harness_session_id, display_name = excluded.display_name, workspace = excluded.workspace`)
+      .run(sessionId, agentId, input.harness ?? null, input.model ?? null, this.clock(), harnessSessionId, displayName, workspace);
     return { agent_id: agentId, session_id: sessionId };
   }
 
@@ -156,9 +199,21 @@ export class Journal {
     return { session_id: session.session_id, released };
   }
 
-  liveSessions(ttlMs = SESSION_TTL_MS): { session_id: string; agent_id: string; harness: string | null; model: string | null; last_seen: number }[] {
-    return this.db.prepare(`SELECT session_id, agent_id, harness, model, last_seen FROM sessions
-      WHERE last_seen > 0 AND last_seen >= ? ORDER BY last_seen DESC, session_id`).all(this.clock() - ttlMs) as { session_id: string; agent_id: string; harness: string | null; model: string | null; last_seen: number }[];
+  liveSessions(ttlMs = SESSION_TTL_MS): LiveSession[] {
+    return this.db.prepare(`SELECT session_id, agent_id, harness, model, last_seen, harness_session_id, display_name, workspace FROM sessions
+      WHERE last_seen > 0 AND last_seen >= ? ORDER BY last_seen DESC, session_id`).all(this.clock() - ttlMs) as LiveSession[];
+  }
+
+  /** Live sessions with their agent alias and the conversations each one holds a lease on. No message bodies. */
+  sessionDirectory(ttlMs = SESSION_TTL_MS): (LiveSession & { alias: string; leases: { conversation_id: string; lease_until: number }[] })[] {
+    const now = this.clock();
+    const leases = this.db.prepare("SELECT conversation_id, lease_until FROM conversation_leases WHERE session_id = ? AND lease_until > ? ORDER BY conversation_id");
+    const alias = this.db.prepare("SELECT alias FROM agents WHERE agent_id = ?");
+    return this.liveSessions(ttlMs).map((session) => ({
+      ...session,
+      alias: (alias.get(session.agent_id) as { alias: string } | undefined)?.alias ?? "",
+      leases: leases.all(session.session_id, now) as { conversation_id: string; lease_until: number }[],
+    }));
   }
 
   /**
