@@ -19,6 +19,10 @@ export interface WakeLine {
  * The watcher keeps its own seen file (separate from the inject hooks', so a wake line doesn't stop a
  * hook from injecting the body later). A new watcher starts from now: its first poll records the
  * existing backlog without reporting it, unless backlog is set.
+ *
+ * Cost: each poll re-reads every unacknowledged inbox file, which is fine at mailbox volumes. The seen
+ * file is capped by SeenStore at the newest 5000 ids, so a message still unacked after 5000 newer ones
+ * would be reported again.
  */
 export function watchPoll(peer: Peer, home: string, session: string, journal: JournalLike | undefined, options: { backlog?: boolean } = {}): WakeLine[] {
   const seen = new SeenStore(home, `watch:${session}`);
