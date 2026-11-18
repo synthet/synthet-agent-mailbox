@@ -10,7 +10,7 @@ import { Peer, peerReplyShape, peerSendShape } from "./peer.js";
 import type { Contact } from "./store.js";
 
 export function createPeerMcp(peer: Peer): McpServer {
-  const server = new McpServer({ name: "agent-mail-p2p", version: "0.3.0" });
+  const server = new McpServer({ name: "agent-mail-p2p", version: "0.4.0" });
   const wrap = async (fn: () => unknown | Promise<unknown>) => {
     try { return { content: [{ type: "text" as const, text: JSON.stringify(await fn(), null, 2) }] }; }
     catch (error) { return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] }; }
