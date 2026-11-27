@@ -472,6 +472,24 @@ impl Store {
             .map_err(db)
     }
 
+    /// The `agent.session_id`s that sent mail from this PC in a conversation (ADR 0004's guard).
+    pub fn sessions_sent_in(&self, conversation_id: &str) -> Result<Vec<String>> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT json_extract(message_json, '$.agent.session_id') FROM (
+                   SELECT message_json FROM sent WHERE conversation_id = ?1
+                   UNION ALL
+                   SELECT message_json FROM outbox WHERE conversation_id = ?1)
+                 WHERE json_extract(message_json, '$.agent.session_id') IS NOT NULL",
+            )
+            .map_err(db)?;
+        let rows = statement
+            .query_map(params![conversation_id], |row| row.get::<_, String>(0))
+            .map_err(db)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(db)
+    }
+
     /// Newest inbox messages with whether each was acknowledged, for the dashboard.
     pub fn recent_inbox(&self, limit: usize) -> Result<Vec<(Message, bool)>> {
         let mut statement = self

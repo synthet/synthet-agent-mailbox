@@ -4,4 +4,5 @@
 
 pub mod consumer;
 pub mod dashboard;
+pub mod live;
 pub mod runner;
