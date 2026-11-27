@@ -1562,6 +1562,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 1.0.69",
+ "windows-sys 0.61.2",
  "x25519-dalek",
 ]
 

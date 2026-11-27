@@ -6,6 +6,7 @@
 
 pub mod canonical;
 pub mod checkout;
+pub mod claude_sessions;
 pub mod dispatch;
 pub mod envelope;
 pub mod error;

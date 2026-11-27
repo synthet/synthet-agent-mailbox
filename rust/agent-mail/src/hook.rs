@@ -139,6 +139,69 @@ fn with_body(mut item: Unseen, text: &str, bodies: bool) -> Unseen {
     item
 }
 
+/// Which peer mail belongs in this session (ADR 0006, af-f3m0e). A task is never shown to a session.
+/// Mail addressed to another live session, or naming a checkout where other live sessions work and
+/// this one doesn't, is left for them. If the addressee is gone, every session sees it again.
+pub struct Audience {
+    me: String,
+    live: Vec<mail_core::claude_sessions::ClaudeSession>,
+    home: PathBuf,
+    policy: Option<Policy>,
+}
+
+impl Audience {
+    /// Reads Claude Code's live sessions from `sessions` (none when it is `None` or unreadable).
+    pub fn read(home: &Path, sessions: Option<&Path>, me: &str) -> Self {
+        Audience {
+            me: me.to_owned(),
+            live: sessions
+                .map(mail_core::claude_sessions::live_sessions)
+                .unwrap_or_default(),
+            home: home.to_path_buf(),
+            policy: Policy::load(home).ok(),
+        }
+    }
+
+    pub fn hides(&self, message: &mail_core::Message) -> bool {
+        if message.intent == Some(mail_core::envelope::Intent::Task) {
+            return true;
+        }
+        if let Some(to) = &message.to_session {
+            if *to == self.me {
+                return false;
+            }
+            if self.live.iter().any(|session| &session.session_id == to) {
+                return true;
+            }
+        }
+        let (Some(checkout), Some(policy)) = (&message.checkout, &self.policy) else {
+            return false;
+        };
+        // Resolving can run git, so only when another live session could be the one it's for.
+        if !self
+            .live
+            .iter()
+            .any(|session| session.session_id != self.me)
+        {
+            return false;
+        }
+        let resolver = mail_core::checkout::Resolver {
+            home: &self.home,
+            roots: &policy.checkout_roots,
+            aliases: &policy.origin_aliases,
+        };
+        let want = mail_core::checkout::RepoId {
+            roots: checkout.roots.clone(),
+            origin: checkout.origin.clone(),
+        };
+        let Ok(folder) = resolver.resolve(&want) else {
+            return false;
+        };
+        let there = mail_core::claude_sessions::inside(&self.live, &folder);
+        !there.is_empty() && !there.iter().any(|session| session.session_id == self.me)
+    }
+}
+
 /// TS `unseenMessages`: the peer inbox, then same-PC messages for a registered session.
 pub fn unseen(
     store: &Store,
@@ -147,11 +210,23 @@ pub fn unseen(
     limit: usize,
     bodies: bool,
 ) -> Result<Vec<Unseen>, Box<dyn std::error::Error>> {
+    unseen_for(store, seen, session, limit, bodies, None)
+}
+
+/// `unseen`, leaving out peer mail that `audience` hides. Hidden mail isn't marked seen.
+pub fn unseen_for(
+    store: &Store,
+    seen: &SeenStore,
+    session: &str,
+    limit: usize,
+    bodies: bool,
+    audience: Option<&Audience>,
+) -> Result<Vec<Unseen>, Box<dyn std::error::Error>> {
     let shown = seen.load()?;
     let mut items = Vec::new();
     for message in store.inbox(ALL)? {
         let key = format!("peer:{}:{}", message.sender, message.id);
-        if shown.contains(&key) {
+        if shown.contains(&key) || audience.is_some_and(|audience| audience.hides(&message)) {
             continue;
         }
         let label = store
@@ -305,7 +380,12 @@ pub fn inject(
         .filter(|session| !session.is_empty())
         .unwrap_or(fallback_session);
     let seen = SeenStore::new(home, session)?;
-    let items = unseen(store, &seen, session, INJECT_LIMIT, true)?;
+    let audience = Audience::read(
+        home,
+        mail_core::claude_sessions::sessions_dir().as_deref(),
+        session,
+    );
+    let items = unseen_for(store, &seen, session, INJECT_LIMIT, true, Some(&audience))?;
     if items.is_empty() {
         return Ok(None);
     }
@@ -335,7 +415,12 @@ pub fn watch_poll(
 ) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
     let seen = SeenStore::new(home, &format!("watch:{session}"))?;
     let first = seen.create()?;
-    let items = unseen(store, &seen, session, ALL, false)?;
+    let audience = Audience::read(
+        home,
+        mail_core::claude_sessions::sessions_dir().as_deref(),
+        session,
+    );
+    let items = unseen_for(store, &seen, session, ALL, false, Some(&audience))?;
     seen.mark(
         &items
             .iter()
@@ -563,5 +648,165 @@ mod tests {
         );
         assert_eq!(tool_result(Some(&json!({ "status": "x" })))["status"], "x");
         assert_eq!(tool_result(None), json!({}));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod audience_tests {
+    use super::*;
+    use mail_core::envelope::{Envelope, Intent, Message, Origin};
+    use mail_core::Identity;
+    use std::process::{Command, Stdio};
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    fn record(dir: &Path, pid: u32, id: &str, cwd: &Path) {
+        let start = mail_core::claude_sessions::process_start(pid).unwrap();
+        std::fs::write(dir.join(format!("{pid}.json")), json!({
+            "pid": pid, "sessionId": id, "cwd": cwd, "kind": "interactive", "procStart": start.to_string(),
+            "messagingSocketPath": format!(r"\\.\pipe\LOCAL\cc-msg-{pid}"),
+        }).to_string()).unwrap();
+    }
+
+    fn mail(from: &Identity, to: &str, n: u8, edit: impl FnOnce(&mut Message)) -> Message {
+        let mut message = Message {
+            id: format!("00000000-0000-4000-8000-0000000000{n:02x}"),
+            conversation_id: "00000000-0000-4000-8000-0000000000c1".into(),
+            sender: from.fingerprint().unwrap(),
+            recipient: to.into(),
+            text: format!("m{n}"),
+            created_at: 1,
+            origin: Origin {
+                hostname: "pc".into(),
+                platform: "win32".into(),
+                arch: "x64".into(),
+                addresses: vec![],
+            },
+            agent: None,
+            to_session: None,
+            hop: None,
+            auto_reply: None,
+            in_reply_to: None,
+            project: None,
+            checkout: None,
+            intent: None,
+            signature: String::new(),
+        };
+        edit(&mut message);
+        message.sign(from, Envelope::V1_3).unwrap()
+    }
+
+    #[test]
+    fn mail_goes_to_the_session_it_is_for_and_tasks_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let me_id = Identity::generate("me").unwrap();
+        std::fs::write(
+            home.join("identity.json"),
+            serde_json::to_string(&me_id).unwrap(),
+        )
+        .unwrap();
+        let peer = Identity::generate("peer").unwrap();
+        let mut store = Store::open(&home).unwrap();
+        store.trust(&peer.public(), None, None).unwrap();
+
+        // The repo: the peer's identity of it, and this PC's clone under a checkout root.
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        git(&src, &["init", "-q"]);
+        git(&src, &["commit", "-q", "--allow-empty", "-m", "root"]);
+        let roots = dir.path().join("roots");
+        std::fs::create_dir_all(&roots).unwrap();
+        let app = roots.join("app");
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                &src.to_string_lossy(),
+                &app.to_string_lossy(),
+            ],
+        );
+        let checkout = mail_core::checkout::local_checkout(&src).unwrap();
+        std::fs::write(
+            home.join("policy.json"),
+            json!({ "allowed_peers": [], "max_bytes": 16384, "checkout_roots": [roots] })
+                .to_string(),
+        )
+        .unwrap();
+
+        // Two live sessions: this process ("me", outside the repo) and a child ("other", in the clone).
+        let mut child = Command::new("cmd")
+            .args(["/C", "ping -n 30 127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        record(&sessions, std::process::id(), "me", dir.path());
+        record(&sessions, child.id(), "other", &app.join("src"));
+
+        let to = me_id.fingerprint().unwrap();
+        for message in [
+            mail(&peer, &to, 1, |m| m.to_session = Some("other".into())),
+            mail(&peer, &to, 2, |m| m.to_session = Some("me".into())),
+            mail(&peer, &to, 3, |m| m.checkout = Some(checkout.clone())),
+            mail(&peer, &to, 4, |m| m.intent = Some(Intent::Task)),
+            mail(&peer, &to, 5, |m| m.to_session = Some("long-gone".into())),
+            mail(&peer, &to, 6, |_| {}),
+        ] {
+            store.receive(&message).unwrap();
+        }
+        let texts = |audience: &Audience| -> Vec<String> {
+            let seen = SeenStore::new(&home, "probe").unwrap();
+            let mut got: Vec<String> = unseen_for(&store, &seen, "me", 100, true, Some(audience))
+                .unwrap()
+                .into_iter()
+                .filter_map(|item| item.body)
+                .map(|b| b.trim().to_owned())
+                .collect();
+            got.sort();
+            got
+        };
+        let audience = Audience::read(&home, Some(&sessions), "me");
+        assert_eq!(
+            texts(&audience),
+            vec!["m2", "m5", "m6"],
+            "to other, its checkout and the task are left out"
+        );
+
+        // "me" also works in the clone: the checkout message is shown, the task still isn't.
+        record(&sessions, std::process::id(), "me", &app);
+        assert_eq!(
+            texts(&Audience::read(&home, Some(&sessions), "me")),
+            vec!["m2", "m3", "m5", "m6"]
+        );
+
+        // The other session is gone: what was addressed to it reaches the sessions that are left.
+        record(&sessions, std::process::id(), "me", dir.path());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            texts(&Audience::read(&home, Some(&sessions), "me")),
+            vec!["m1", "m2", "m3", "m5", "m6"]
+        );
+        // No sessions known at all: only the task is held back.
+        assert_eq!(
+            texts(&Audience::read(&home, None, "me")),
+            vec!["m1", "m2", "m3", "m5", "m6"]
+        );
     }
 }
