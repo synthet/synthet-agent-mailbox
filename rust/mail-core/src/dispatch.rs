@@ -166,6 +166,9 @@ pub struct DispatchPolicy {
 pub struct LivePolicy {
     #[serde(default)]
     pub enabled: bool,
+    /// The SendMessage relay (a small, capped model call per wake) when the pipe is off or fails.
+    #[serde(default)]
+    pub relay: bool,
 }
 
 impl DispatchPolicy {

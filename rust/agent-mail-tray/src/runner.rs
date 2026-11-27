@@ -212,7 +212,7 @@ pub fn classify(code: Option<i32>, stdout: &str, stderr: &str) -> RunResult {
     }
 }
 
-enum Spawned {
+pub(crate) enum Spawned {
     NotFound,
     Failed,
     TimedOut,
@@ -224,7 +224,7 @@ enum Spawned {
 }
 
 /// Spawns, writes the prompt to stdin, and waits; on timeout kills the whole process tree.
-fn run_with_timeout(mut command: Command, input: &str, timeout: Duration) -> Spawned {
+pub(crate) fn run_with_timeout(mut command: Command, input: &str, timeout: Duration) -> Spawned {
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Spawned::NotFound,

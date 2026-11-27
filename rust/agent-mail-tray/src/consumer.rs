@@ -194,33 +194,64 @@ pub fn tick_in(
             }
             Decision::Wake(target) => {
                 rate.record(&message.sender, now);
-                let outcome = match (&target, sessions) {
-                    (WakeTarget::ClaudeSession { session_id, .. }, Some(dir))
-                        if dispatch.live.enabled =>
-                    {
+                let label = store
+                    .contact(&message.sender)
+                    .ok()
+                    .flatten()
+                    .map(|contact| contact.identity.name);
+                let notice = live_notice(&message, label.as_deref());
+                let claude = dispatch
+                    .claude_command
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("claude"));
+                let relay = |addressee: crate::relay::Addressee<'_>| {
+                    crate::relay::relay(
+                        &claude,
+                        &addressee,
+                        &live,
+                        &notice,
+                        dispatch.limits.budget_usd,
+                        &crate::relay::workdir(home),
+                    )
+                };
+                let outcome = match &target {
+                    WakeTarget::ClaudeSession { session_id, .. } => {
                         match live
                             .iter()
                             .find(|session| &session.session_id == session_id)
                         {
+                            None => "the session is gone".to_owned(),
                             Some(session) => {
-                                let label = store
-                                    .contact(&message.sender)
-                                    .ok()
-                                    .flatten()
-                                    .map(|contact| contact.identity.name);
-                                let notice = live_notice(&message, label.as_deref());
-                                // "written": the pipe sends no acknowledgement (ADR 0006).
-                                match crate::live::write_notice(dir, session, &notice) {
-                                    Ok(()) => "written".to_owned(),
-                                    Err(error) => error.to_string(),
+                                // The pipe first; "written" because it sends no acknowledgement.
+                                let direct = match (dispatch.live.enabled, sessions) {
+                                    (true, Some(dir)) => {
+                                        Some(crate::live::write_notice(dir, session, &notice))
+                                    }
+                                    _ => None,
+                                };
+                                match (direct, dispatch.live.relay) {
+                                    (Some(Ok(())), _) => "written".to_owned(),
+                                    (Some(Err(error)), true) => {
+                                        format!(
+                                            "{error}; {}",
+                                            relay(crate::relay::Addressee::Session(session))
+                                        )
+                                    }
+                                    (Some(Err(error)), false) => error.to_string(),
+                                    (None, true) => {
+                                        relay(crate::relay::Addressee::Session(session))
+                                    }
+                                    (None, false) => "live delivery is off".to_owned(),
                                 }
                             }
-                            None => "the session is gone".to_owned(),
                         }
                     }
-                    (WakeTarget::ClaudeSession { .. }, _) => "live delivery is off".to_owned(),
-                    // Other wake paths arrive with the relay (af-0vyj1); the message waits in the inbox.
-                    _ => "not available yet".to_owned(),
+                    WakeTarget::Claude { name, .. } if dispatch.live.relay => {
+                        relay(crate::relay::Addressee::Name(name))
+                    }
+                    WakeTarget::Claude { .. } => "live delivery is off".to_owned(),
+                    // Codex wakes are not ported yet; the message waits in the inbox.
+                    WakeTarget::Codex { .. } => "not available yet".to_owned(),
                 };
                 record(
                     "wake",
