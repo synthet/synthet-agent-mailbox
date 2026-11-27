@@ -433,6 +433,59 @@ async fn rust_delivers_to_a_typescript_peer_and_drops_the_project_tag() {
         1,
         "nothing else arrived"
     );
+
+    // A task held past the limit stops retrying and reports why.
+    let identity = mail_core::Identity::load(&p.alice).unwrap();
+    let old = mail_core::envelope::Message {
+        id: "00000000-0000-4000-8000-00000000e0e0".into(),
+        conversation_id: "00000000-0000-4000-8000-00000000e0e1".into(),
+        sender: identity.fingerprint().unwrap(),
+        recipient: ts_fp.into(),
+        text: "an old task".into(),
+        created_at: mail_core::store::now_ms() - mail_core::outbox::TASK_HOLD_LIMIT_MS - 60_000,
+        origin: mail_core::send::local_origin(),
+        agent: None,
+        to_session: None,
+        hop: None,
+        auto_reply: None,
+        in_reply_to: None,
+        project: None,
+        checkout: None,
+        intent: Some(mail_core::envelope::Intent::Task),
+        signature: String::new(),
+    };
+    mail_core::store::Store::open(&p.alice)
+        .unwrap()
+        .queue(&old, true)
+        .unwrap();
+    cli(&p.alice, &["flush"]).await;
+    let alice = p.alice.clone();
+    wait_for(move || {
+        matches!(
+            mail_core::store::Store::open(&alice)
+                .unwrap()
+                .delivery("00000000-0000-4000-8000-00000000e0e0")
+                .unwrap(),
+            Some(mail_core::outbox::Delivery::Expired { .. })
+        )
+    })
+    .await;
+    let state = mail_core::store::Store::open(&p.alice)
+        .unwrap()
+        .delivery("00000000-0000-4000-8000-00000000e0e0")
+        .unwrap()
+        .unwrap();
+    assert!(
+        serde_json::to_string(&state)
+            .unwrap()
+            .contains("task_expired"),
+        "{state:?}"
+    );
+    assert_eq!(
+        node_cli(&ts, &["inbox"]).out.as_array().unwrap().len(),
+        1,
+        "the old task never arrived"
+    );
 }
 
 /// File name -> contents for every JSON file under the TS store areas.

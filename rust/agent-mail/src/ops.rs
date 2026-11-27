@@ -98,6 +98,7 @@ pub fn wait_for_delivery(
 ) -> Result<Outcome, OpError> {
     let id = match &queued {
         Delivery::Delivered { .. } => return Ok(Outcome::Delivered(to_value(&queued))),
+        Delivery::Expired { .. } => return Ok(Outcome::Queued(to_value(&queued))),
         Delivery::Queued { message_id, .. } => message_id.clone(),
     };
     if !ipc::poke(home) {
@@ -113,6 +114,8 @@ pub fn wait_for_delivery(
             .ok_or_else(|| OpError::Failed("queued message vanished".into()))?;
         match &state {
             Delivery::Delivered { .. } => return Ok(Outcome::Delivered(to_value(&state))),
+            // Given up on: report it as not delivered (exit 2), with its reason.
+            Delivery::Expired { .. } => return Ok(Outcome::Queued(to_value(&state))),
             Delivery::Queued { attempts, .. } if *attempts > 0 || started.elapsed() >= wait => {
                 return Ok(Outcome::Queued(to_value(&state)))
             }

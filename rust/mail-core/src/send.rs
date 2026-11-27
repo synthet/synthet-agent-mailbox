@@ -426,9 +426,9 @@ mod tests {
     fn the_recipient_and_thread_come_from_the_stored_message_and_a_second_reply_is_refused() {
         let mut f = run_fixture("right-token");
         let reply_id = match run_reply(&mut f, "right-token").unwrap() {
-            Delivery::Queued { message_id, .. } | Delivery::Delivered { message_id, .. } => {
-                message_id
-            }
+            Delivery::Queued { message_id, .. }
+            | Delivery::Delivered { message_id, .. }
+            | Delivery::Expired { message_id, .. } => message_id,
         };
         assert_eq!(
             f.store.run_reply("run-1").unwrap().as_deref(),

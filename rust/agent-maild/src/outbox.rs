@@ -124,6 +124,15 @@ impl Outbox {
             // A task can't be downgraded into a plain message (ADR 0006 decision 1).
             if message.intent == Some(mail_core::envelope::Intent::Task) && accept < Envelope::V1_3
             {
+                // Held too long: stop retrying so a peer that upgrades much later doesn't get a stale task.
+                if mail_core::outbox::task_hold_expired(message.created_at, now_ms()) {
+                    let id = row.id.clone();
+                    self.store(move |store| {
+                        store.expire(&id, "task_expired: the peer never accepted agent-mail/1.3")
+                    })
+                    .await?;
+                    return Err("task_expired".into());
+                }
                 return Err(
                     "Peer does not accept agent-mail/1.3, so it can't take a task; task held"
                         .into(),

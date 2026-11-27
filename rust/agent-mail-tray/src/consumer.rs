@@ -247,6 +247,7 @@ fn send_reply(
             let (status, id) = match &delivery {
                 Delivery::Queued { message_id, .. } => ("queued", message_id.clone()),
                 Delivery::Delivered { message_id, .. } => ("delivered", message_id.clone()),
+                Delivery::Expired { message_id, .. } => ("expired", message_id.clone()),
             };
             let line = ledger_line(
                 &message.sender,

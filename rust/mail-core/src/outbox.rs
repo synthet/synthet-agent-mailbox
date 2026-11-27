@@ -38,6 +38,20 @@ pub enum Delivery {
         #[serde(flatten)]
         details: Value,
     },
+    /// Given up: the outbox no longer retries it (a task held past [`TASK_HOLD_LIMIT_MS`]).
+    Expired {
+        message_id: String,
+        conversation_id: String,
+        error: String,
+    },
+}
+
+/// How long a task waits for a peer that can't take agent-mail/1.3 before it expires (ADR 0006).
+pub const TASK_HOLD_LIMIT_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Whether a task created at `created_at` has been held too long at `now`.
+pub fn task_hold_expired(created_at: u64, now: u64) -> bool {
+    now.saturating_sub(created_at) >= TASK_HOLD_LIMIT_MS
 }
 
 /// Queue/sent/inbox counts, as `status` reports them.
@@ -189,14 +203,23 @@ impl Store {
         }
         self.conn
             .query_row(
-                "SELECT id, conversation_id, attempts, last_error FROM outbox WHERE id = ?1",
+                "SELECT id, conversation_id, attempts, last_error, state FROM outbox WHERE id = ?1",
                 [id],
                 |row| {
-                    Ok(Delivery::Queued {
-                        message_id: row.get(0)?,
-                        conversation_id: row.get(1)?,
-                        attempts: row.get::<_, i64>(2)? as u32,
-                        error: row.get(3)?,
+                    let state: String = row.get(4)?;
+                    Ok(if state == "expired" {
+                        Delivery::Expired {
+                            message_id: row.get(0)?,
+                            conversation_id: row.get(1)?,
+                            error: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                        }
+                    } else {
+                        Delivery::Queued {
+                            message_id: row.get(0)?,
+                            conversation_id: row.get(1)?,
+                            attempts: row.get::<_, i64>(2)? as u32,
+                            error: row.get(3)?,
+                        }
                     })
                 },
             )
@@ -274,6 +297,17 @@ impl Store {
         tx.commit().map_err(db)
     }
 
+    /// Stops retrying `id`: it stays in the outbox as `expired` with `error`, for status and the owner.
+    pub fn expire(&self, id: &str, error: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE outbox SET state = 'expired', last_error = ?2 WHERE id = ?1",
+                params![id, error],
+            )
+            .map_err(db)?;
+        Ok(())
+    }
+
     pub fn failed_attempt(&self, id: &str, error: &str, next_attempt_at: u64) -> Result<()> {
         self.conn
             .execute(
@@ -339,7 +373,7 @@ impl Store {
     pub fn counts(&self) -> Result<Counts> {
         self.conn
             .query_row(
-                "SELECT (SELECT COUNT(*) FROM outbox),
+                "SELECT (SELECT COUNT(*) FROM outbox WHERE state = 'queued'),
                         (SELECT COUNT(*) FROM inbox i WHERE NOT EXISTS
                            (SELECT 1 FROM acks a WHERE a.sender = i.sender AND a.id = i.id)),
                         (SELECT COUNT(*) FROM sent)",
@@ -525,5 +559,67 @@ impl Store {
             Ok((parse_stored(&json)?, attempts as u32, error))
         })
         .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_expired_row_is_not_retried_counted_or_reported_as_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let alice = crate::Identity::generate("alice").unwrap();
+        let bob = crate::Identity::generate("bob").unwrap();
+        store.trust(&bob.public(), None, None).unwrap();
+        let message = crate::envelope::Message {
+            id: "00000000-0000-4000-8000-0000000000a9".into(),
+            conversation_id: "00000000-0000-4000-8000-0000000000a8".into(),
+            sender: alice.fingerprint().unwrap(),
+            recipient: bob.fingerprint().unwrap(),
+            text: "do this".into(),
+            created_at: 1,
+            origin: crate::envelope::Origin {
+                hostname: "pc".into(),
+                platform: "win32".into(),
+                arch: "x64".into(),
+                addresses: vec![],
+            },
+            agent: None,
+            to_session: None,
+            hop: None,
+            auto_reply: None,
+            in_reply_to: None,
+            project: None,
+            checkout: None,
+            intent: Some(crate::envelope::Intent::Task),
+            signature: String::new(),
+        };
+        store.queue(&message, true).unwrap();
+        assert_eq!(store.due_outbox(i64::MAX as u64, 10).unwrap().len(), 1);
+        assert_eq!(store.counts().unwrap().pending, 1);
+        store.expire(&message.id, "task_expired: test").unwrap();
+        assert!(
+            store.due_outbox(i64::MAX as u64, 10).unwrap().is_empty(),
+            "never retried again"
+        );
+        assert_eq!(store.counts().unwrap().pending, 0);
+        let state = store.delivery(&message.id).unwrap().unwrap();
+        assert!(
+            matches!(&state, Delivery::Expired { error, .. } if error.contains("task_expired")),
+            "{state:?}"
+        );
+        assert_eq!(serde_json::to_value(&state).unwrap()["status"], "expired");
+    }
+
+    #[test]
+    fn a_task_expires_after_the_hold_limit() {
+        assert!(!task_hold_expired(1_000, 1_000 + TASK_HOLD_LIMIT_MS - 1));
+        assert!(task_hold_expired(1_000, 1_000 + TASK_HOLD_LIMIT_MS));
+        assert!(
+            !task_hold_expired(5_000, 1_000),
+            "a clock behind the message doesn't expire it"
+        );
     }
 }
