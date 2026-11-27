@@ -143,23 +143,50 @@ fn with_body(mut item: Unseen, text: &str, bodies: bool) -> Unseen {
 /// Mail addressed to another live session, or naming a checkout where other live sessions work and
 /// this one doesn't, is left for them. If the addressee is gone, every session sees it again.
 pub struct Audience {
-    me: String,
+    /// This session's ids: the hook's `session_id`, and the `sessionId` in its own session record
+    /// (found through `CLAUDE_PID`), which can differ after `/clear` or a resume.
+    me: Vec<String>,
     live: Vec<mail_core::claude_sessions::ClaudeSession>,
     home: PathBuf,
     policy: Option<Policy>,
 }
 
 impl Audience {
-    /// Reads Claude Code's live sessions from `sessions` (none when it is `None` or unreadable).
+    /// Reads Claude Code's live sessions from `sessions` (none when it is `None` or unreadable), and
+    /// this session's own record from the `CLAUDE_PID` Claude Code exports to hooks.
     pub fn read(home: &Path, sessions: Option<&Path>, me: &str) -> Self {
+        let claude_pid = std::env::var("CLAUDE_PID")
+            .ok()
+            .and_then(|pid| pid.trim().parse().ok());
+        Self::read_with(home, sessions, me, claude_pid)
+    }
+
+    pub fn read_with(
+        home: &Path,
+        sessions: Option<&Path>,
+        me: &str,
+        claude_pid: Option<u32>,
+    ) -> Self {
+        let live: Vec<mail_core::claude_sessions::ClaudeSession> = sessions
+            .map(mail_core::claude_sessions::live_sessions)
+            .unwrap_or_default();
+        let mut ids = vec![me.to_owned()];
+        if let Some(own) = claude_pid.and_then(|pid| live.iter().find(|session| session.pid == pid))
+        {
+            if !ids.contains(&own.session_id) {
+                ids.push(own.session_id.clone());
+            }
+        }
         Audience {
-            me: me.to_owned(),
-            live: sessions
-                .map(mail_core::claude_sessions::live_sessions)
-                .unwrap_or_default(),
+            me: ids,
+            live,
             home: home.to_path_buf(),
             policy: Policy::load(home).ok(),
         }
+    }
+
+    fn is_me(&self, session_id: &str) -> bool {
+        self.me.iter().any(|id| id == session_id)
     }
 
     pub fn hides(&self, message: &mail_core::Message) -> bool {
@@ -167,7 +194,7 @@ impl Audience {
             return true;
         }
         if let Some(to) = &message.to_session {
-            if *to == self.me {
+            if self.is_me(to) {
                 return false;
             }
             if self.live.iter().any(|session| &session.session_id == to) {
@@ -181,7 +208,7 @@ impl Audience {
         if !self
             .live
             .iter()
-            .any(|session| session.session_id != self.me)
+            .any(|session| !self.is_me(&session.session_id))
         {
             return false;
         }
@@ -198,7 +225,7 @@ impl Audience {
             return false;
         };
         let there = mail_core::claude_sessions::inside(&self.live, &folder);
-        !there.is_empty() && !there.iter().any(|session| session.session_id == self.me)
+        !there.is_empty() && !there.iter().any(|session| self.is_me(&session.session_id))
     }
 }
 
@@ -706,6 +733,89 @@ mod audience_tests {
         };
         edit(&mut message);
         message.sign(from, Envelope::V1_3).unwrap()
+    }
+
+    #[test]
+    fn a_session_known_by_its_record_still_gets_mail_after_its_hook_id_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let me_id = Identity::generate("me").unwrap();
+        std::fs::write(
+            home.join("identity.json"),
+            serde_json::to_string(&me_id).unwrap(),
+        )
+        .unwrap();
+        let peer = Identity::generate("peer").unwrap();
+        let mut store = Store::open(&home).unwrap();
+        store.trust(&peer.public(), None, None).unwrap();
+
+        // This process's record says "me-record"; the hook now reports "me-hook" (after /clear).
+        // Another live session exists, so mail to "me-record" would look like someone else's.
+        let mut child = Command::new("cmd")
+            .args(["/C", "ping -n 30 127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        record(&sessions, std::process::id(), "me-record", dir.path());
+        record(&sessions, child.id(), "other", dir.path());
+        let to = me_id.fingerprint().unwrap();
+        store
+            .receive(&mail(&peer, &to, 1, |m| {
+                m.to_session = Some("me-record".into())
+            }))
+            .unwrap();
+        store
+            .receive(&mail(&peer, &to, 2, |m| {
+                m.to_session = Some("other".into())
+            }))
+            .unwrap();
+        let texts = |audience: &Audience| -> Vec<String> {
+            let seen = SeenStore::new(&home, "probe").unwrap();
+            let mut got: Vec<String> =
+                unseen_for(&store, &seen, "me-hook", 100, true, Some(audience))
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(|item| item.body)
+                    .map(|b| b.trim().to_owned())
+                    .collect();
+            got.sort();
+            got
+        };
+        assert_eq!(
+            texts(&Audience::read_with(
+                &home,
+                Some(&sessions),
+                "me-hook",
+                None
+            )),
+            Vec::<String>::new(),
+            "without the record, both look like other sessions' mail"
+        );
+        assert_eq!(
+            texts(&Audience::read_with(
+                &home,
+                Some(&sessions),
+                "me-hook",
+                Some(std::process::id())
+            )),
+            vec!["m1"],
+            "CLAUDE_PID names this session's record"
+        );
+        // A pid whose record is someone else's doesn't make that session "me".
+        assert_eq!(
+            texts(&Audience::read_with(
+                &home,
+                Some(&sessions),
+                "me-hook",
+                Some(child.id())
+            )),
+            vec!["m2"]
+        );
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]
