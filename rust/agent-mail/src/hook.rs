@@ -142,6 +142,9 @@ fn with_body(mut item: Unseen, text: &str, bodies: bool) -> Unseen {
 /// Which peer mail belongs in this session (ADR 0006, af-f3m0e). A task is never shown to a session.
 /// Mail addressed to another live session, or naming a checkout where other live sessions work and
 /// this one doesn't, is left for them. If the addressee is gone, every session sees it again.
+/// A checkout identity as a map key: its root commits and origin.
+type CheckoutKey = (Vec<String>, Option<String>);
+
 pub struct Audience {
     /// This session's ids: the hook's `session_id`, and the `sessionId` in its own session record
     /// (found through `CLAUDE_PID`), which can differ after `/clear` or a resume.
@@ -149,6 +152,9 @@ pub struct Audience {
     live: Vec<mail_core::claude_sessions::ClaudeSession>,
     home: PathBuf,
     policy: Option<Policy>,
+    /// Checkout resolutions made during this call, so each distinct checkout is resolved once.
+    resolved: std::cell::RefCell<std::collections::HashMap<CheckoutKey, Option<PathBuf>>>,
+    resolutions: std::cell::Cell<usize>,
 }
 
 impl Audience {
@@ -182,7 +188,14 @@ impl Audience {
             live,
             home: home.to_path_buf(),
             policy: Policy::load(home).ok(),
+            resolved: Default::default(),
+            resolutions: Default::default(),
         }
+    }
+
+    /// How many checkout resolutions this audience made (each distinct checkout at most once).
+    pub fn resolutions(&self) -> usize {
+        self.resolutions.get()
     }
 
     fn is_me(&self, session_id: &str) -> bool {
@@ -212,16 +225,27 @@ impl Audience {
         {
             return false;
         }
-        let resolver = mail_core::checkout::Resolver {
-            home: &self.home,
-            roots: &policy.checkout_roots,
-            aliases: &policy.origin_aliases,
+        let key = (checkout.roots.clone(), checkout.origin.clone());
+        let cached = self.resolved.borrow().get(&key).cloned();
+        let folder = match cached {
+            Some(folder) => folder,
+            None => {
+                let resolver = mail_core::checkout::Resolver {
+                    home: &self.home,
+                    roots: &policy.checkout_roots,
+                    aliases: &policy.origin_aliases,
+                };
+                let want = mail_core::checkout::RepoId {
+                    roots: key.0.clone(),
+                    origin: key.1.clone(),
+                };
+                self.resolutions.set(self.resolutions.get() + 1);
+                let folder = resolver.resolve(&want).ok();
+                self.resolved.borrow_mut().insert(key, folder.clone());
+                folder
+            }
         };
-        let want = mail_core::checkout::RepoId {
-            roots: checkout.roots.clone(),
-            origin: checkout.origin.clone(),
-        };
-        let Ok(folder) = resolver.resolve(&want) else {
+        let Some(folder) = folder else {
             return false;
         };
         let there = mail_core::claude_sessions::inside(&self.live, &folder);
@@ -815,6 +839,86 @@ mod audience_tests {
                 Some(child.id())
             )),
             vec!["m2"]
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn each_checkout_is_resolved_once_per_call_and_a_hit_leaves_the_cache_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let me_id = Identity::generate("me").unwrap();
+        std::fs::write(
+            home.join("identity.json"),
+            serde_json::to_string(&me_id).unwrap(),
+        )
+        .unwrap();
+        let peer = Identity::generate("peer").unwrap();
+        let mut store = Store::open(&home).unwrap();
+        store.trust(&peer.public(), None, None).unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        git(&src, &["init", "-q"]);
+        git(&src, &["commit", "-q", "--allow-empty", "-m", "root"]);
+        let roots = dir.path().join("roots");
+        std::fs::create_dir_all(&roots).unwrap();
+        let app = roots.join("app");
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                &src.to_string_lossy(),
+                &app.to_string_lossy(),
+            ],
+        );
+        let checkout = mail_core::checkout::local_checkout(&src).unwrap();
+        std::fs::write(
+            home.join("policy.json"),
+            json!({ "allowed_peers": [], "max_bytes": 16384, "checkout_roots": [roots] })
+                .to_string(),
+        )
+        .unwrap();
+        let mut child = Command::new("cmd")
+            .args(["/C", "ping -n 30 127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let sessions = dir.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        record(&sessions, std::process::id(), "me", dir.path());
+        record(&sessions, child.id(), "other", &app);
+        let to = me_id.fingerprint().unwrap();
+        for n in 1..=3 {
+            store
+                .receive(&mail(&peer, &to, n, |m| {
+                    m.checkout = Some(checkout.clone())
+                }))
+                .unwrap();
+        }
+        let run = || {
+            let audience = Audience::read_with(&home, Some(&sessions), "me", None);
+            let seen = SeenStore::new(&home, "probe").unwrap();
+            let shown = unseen_for(&store, &seen, "me", 100, true, Some(&audience))
+                .unwrap()
+                .len();
+            (shown, audience.resolutions())
+        };
+        assert_eq!(
+            run(),
+            (0, 1),
+            "three messages, one checkout, one resolution"
+        );
+        let cache = home.join(mail_core::checkout::CACHE_FILE);
+        let before = std::fs::metadata(&cache).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(run(), (0, 1));
+        assert_eq!(
+            std::fs::metadata(&cache).unwrap().modified().unwrap(),
+            before,
+            "a cache hit doesn't rewrite the file"
         );
         let _ = child.kill();
         let _ = child.wait();
