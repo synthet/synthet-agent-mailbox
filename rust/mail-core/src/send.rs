@@ -4,14 +4,15 @@
 
 use std::path::Path;
 
-use crate::envelope::{AgentMeta, Envelope, Message, Origin};
+use crate::envelope::{AgentMeta, Checkout, Envelope, Intent, Message, Origin};
 use crate::error::{invalid, Result};
 use crate::identity::Identity;
 use crate::outbox::Delivery;
 use crate::policy::{check_outbound, Policy};
 use crate::store::{now_ms, Store};
 
-/// What a caller asks to send. Mirrors TS `peerSendShape`, plus the 1.2 `project` tag.
+/// What a caller asks to send. Mirrors TS `peerSendShape`, plus the 1.2 `project` tag and the 1.3
+/// `checkout` and `intent`.
 #[derive(Clone, Debug, Default)]
 pub struct SendRequest {
     pub recipient: String,
@@ -24,6 +25,8 @@ pub struct SendRequest {
     pub auto_reply: Option<bool>,
     pub in_reply_to: Option<String>,
     pub project: Option<String>,
+    pub checkout: Option<Checkout>,
+    pub intent: Option<Intent>,
 }
 
 /// Why a send didn't queue.
@@ -77,9 +80,14 @@ pub fn submit(
         auto_reply: request.auto_reply,
         in_reply_to: request.in_reply_to,
         project: request.project,
+        // The owner can keep the repo identity on this PC (ADR 0006 decision 2).
+        checkout: request
+            .checkout
+            .filter(|_| policy.share_checkout != Some(false)),
+        intent: request.intent,
         signature: String::new(),
     }
-    .normalized(Envelope::V1_2)?;
+    .normalized(Envelope::LATEST)?;
     Ok(store.queue(&message, explicit_conversation)?)
 }
 
@@ -163,6 +171,9 @@ pub fn reply(
             in_reply_to: Some(original.id.clone()),
             // A reply stays in the project the question was about.
             project: original.project.clone(),
+            // ...and names the same repo, so the asker's PC can find the asking session's checkout.
+            checkout: original.checkout.clone(),
+            intent: None,
         },
     )
 }
@@ -274,7 +285,9 @@ pub fn agent_profile(
         harness: pick(harness, "AGENT_MAIL_HARNESS"),
         name: pick(name, "AGENT_MAIL_AGENT_NAME"),
         model: pick(model, "AGENT_MAIL_MODEL"),
-        session_id: pick(session_id, "AGENT_MAIL_SESSION"),
+        // Claude Code exports its own session id to hooks and Bash (ADR 0006 decision 1).
+        session_id: pick(session_id, "AGENT_MAIL_SESSION")
+            .or_else(|| pick(None, "CLAUDE_CODE_SESSION_ID")),
     };
     (agent != AgentMeta::default()).then_some(agent)
 }
@@ -349,6 +362,8 @@ mod tests {
             auto_reply,
             in_reply_to: None,
             project: None,
+            checkout: None,
+            intent: None,
             signature: String::new(),
         }
         .sign(&bob, Envelope::V1_2)

@@ -115,6 +115,9 @@ function write(file) {
   const valid = messages[0].signed;
   const invalid = [
     { label: "unknown-field", message: { ...valid, project: "demo" } },
+    // agent-mail/1.3 (ADR 0006): TS peers reject both, so Rust sends them only to 1.3 receivers.
+    { label: "unknown-field-checkout", message: { ...valid, checkout: { roots: ["a".repeat(40)], origin: "github.com/o/app" } } },
+    { label: "unknown-field-intent", message: { ...valid, intent: "task" } },
     { label: "bad-uuid", message: { ...valid, id: "not-a-uuid" } },
     { label: "empty-text", message: { ...valid, text: "" } },
     { label: "empty-agent", message: { ...valid, agent: {} } },

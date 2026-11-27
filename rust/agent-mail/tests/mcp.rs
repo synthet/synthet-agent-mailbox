@@ -68,6 +68,7 @@ fn mcp_run(home: &Path, run: Option<(&str, &str)>, calls: Value) -> Value {
         .env("ARGS", args.to_string())
         .env("CALLS", calls.to_string())
         .env_remove("AGENT_MAIL_SESSION")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .output()
         .expect("node is on PATH");
     assert!(

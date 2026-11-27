@@ -121,8 +121,16 @@ impl Outbox {
             if message.auto_reply == Some(true) && accept < Envelope::V1_1 {
                 return Err("Peer does not accept agent-mail/1.1, so it would not see auto_reply; automatic reply held".into());
             }
+            // A task can't be downgraded into a plain message (ADR 0006 decision 1).
+            if message.intent == Some(mail_core::envelope::Intent::Task) && accept < Envelope::V1_3
+            {
+                return Err(
+                    "Peer does not accept agent-mail/1.3, so it can't take a task; task held"
+                        .into(),
+                );
+            }
             let downgraded = message.downgrade_to(accept);
-            let signed = message.sign(&self.identity, Envelope::V1_2)?;
+            let signed = message.sign(&self.identity, Envelope::LATEST)?;
             let (id, stored) = (row.id.clone(), signed.clone());
             self.store(move |store| store.mark_signed(&id, &stored, downgraded))
                 .await?;

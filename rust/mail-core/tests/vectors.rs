@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use mail_core::envelope::{Envelope, Message, ENVELOPE_V1_2};
+use mail_core::envelope::{Checkout, Envelope, Intent, Message, ENVELOPE_V1_2, ENVELOPE_V1_3};
 use mail_core::wire::{receipt, seal, unseal, verify_receipt, Packet};
 use mail_core::{fingerprint, Error, Identity, PublicIdentity};
 use serde_json::{json, Value};
@@ -228,4 +228,98 @@ fn generated_identity_is_consistent() {
     let carol = Identity::generate("carol").unwrap();
     carol.check().unwrap();
     assert!(Identity::generate("   ").is_err());
+}
+
+fn checkout() -> Checkout {
+    Checkout {
+        roots: vec!["a".repeat(40)],
+        origin: Some("github.com/o/app".into()),
+        head: Some("b".repeat(40)),
+        branch: Some("feature/x".into()),
+        name: Some("app".into()),
+    }
+}
+
+#[test]
+fn checkout_and_intent_need_envelope_1_3() {
+    let v = vectors();
+    let alice = identity(&v, "alice");
+    let mut unsigned: Message = serde_json::from_value(v["messages"][0]["input"].clone()).unwrap();
+    unsigned.checkout = Some(checkout());
+    unsigned.intent = Some(Intent::Task);
+    assert_eq!(unsigned.needs(), Envelope::V1_3);
+    let signed = unsigned.clone().sign(&alice, Envelope::V1_3).unwrap();
+    let json: Value = serde_json::from_str(&signed.json()).unwrap();
+    assert_eq!(json["intent"], "task");
+    assert_eq!(json["checkout"]["origin"], "github.com/o/app");
+    assert_eq!(
+        Message::parse_signed(json.clone(), Envelope::V1_3).unwrap(),
+        signed
+    );
+    assert!(signed.verify(&alice.public()));
+    assert!(
+        Message::parse_signed(json, Envelope::V1_2).is_err(),
+        "a 1.2 receiver rejects the new fields"
+    );
+    assert!(unsigned.clone().sign(&alice, Envelope::V1_2).is_err());
+    assert_eq!(ENVELOPE_V1_3, "agent-mail/1.3");
+    assert_eq!(
+        Envelope::accepted_by(&["agent-mail/1.2".into(), "agent-mail/1.3".into()]),
+        Envelope::V1_3
+    );
+
+    for vector in ["unknown-field-checkout", "unknown-field-intent"] {
+        let item = v["invalid"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["label"] == vector)
+            .unwrap_or_else(|| panic!("vector {vector}"));
+        assert!(Message::parse_signed(item["message"].clone(), Envelope::V1_2).is_err());
+        assert!(Message::parse_signed(item["message"].clone(), Envelope::V1_3).is_ok());
+    }
+}
+
+#[test]
+fn checkout_limits_are_enforced() {
+    let v = vectors();
+    let alice = identity(&v, "alice");
+    let base: Message = serde_json::from_value(v["messages"][0]["input"].clone()).unwrap();
+    let bad: [fn(&mut Checkout); 8] = [
+        |c| c.roots = vec![],
+        |c| c.roots = vec!["a".repeat(40); 5],
+        |c| c.roots = vec!["A".repeat(40)],
+        |c| c.origin = Some("github.com/O/app".into()),
+        |c| c.origin = Some("https://github.com/o/app".into()),
+        |c| c.head = Some("xyz".into()),
+        |c| c.branch = Some("has space".into()),
+        |c| c.name = Some("../etc".into()),
+    ];
+    for (i, spoil) in bad.iter().enumerate() {
+        let mut message = base.clone();
+        let mut c = checkout();
+        spoil(&mut c);
+        message.checkout = Some(c);
+        assert!(message.sign(&alice, Envelope::V1_3).is_err(), "case {i}");
+    }
+}
+
+#[test]
+fn downgrade_drops_checkout_and_notify_but_never_a_task() {
+    let v = vectors();
+    let mut message: Message = serde_json::from_value(v["messages"][0]["input"].clone()).unwrap();
+    message.checkout = Some(checkout());
+    message.intent = Some(Intent::Notify);
+    assert!(!message.clone().downgrade_to(Envelope::V1_3));
+    let mut notify = message.clone();
+    assert!(notify.downgrade_to(Envelope::V1_2));
+    assert_eq!((notify.checkout, notify.intent), (None, None));
+    let mut task = message;
+    task.intent = Some(Intent::Task);
+    assert!(task.downgrade_to(Envelope::V1_2));
+    assert_eq!(
+        task.intent,
+        Some(Intent::Task),
+        "a task stays a task; the outbox holds it"
+    );
 }

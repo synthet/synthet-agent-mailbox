@@ -138,7 +138,7 @@ impl Store {
             .query_map([limit as i64], |row| row.get::<_, String>(0))
             .map_err(db)?;
         rows.map(|row| {
-            Message::parse_signed(serde_json::from_str(&row.map_err(db)?)?, Envelope::V1_2)
+            Message::parse_signed(serde_json::from_str(&row.map_err(db)?)?, Envelope::LATEST)
         })
         .collect()
     }

@@ -57,6 +57,9 @@ async fn answer(
                 "error".to_owned()
             } else {
                 match status.outbox.envelope_for(fp).await {
+                    Ok(mail_core::envelope::Envelope::V1_3) => {
+                        mail_core::envelope::ENVELOPE_V1_3.to_owned()
+                    }
                     Ok(mail_core::envelope::Envelope::V1_2) => {
                         mail_core::envelope::ENVELOPE_V1_2.to_owned()
                     }

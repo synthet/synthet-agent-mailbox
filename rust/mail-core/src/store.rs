@@ -381,7 +381,7 @@ impl Store {
             .map_err(db)?;
         rows.map(|row| {
             let json = row.map_err(db)?;
-            Message::parse_signed(serde_json::from_str(&json)?, Envelope::V1_2)
+            Message::parse_signed(serde_json::from_str(&json)?, Envelope::LATEST)
         })
         .collect()
     }

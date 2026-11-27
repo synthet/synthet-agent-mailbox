@@ -212,6 +212,49 @@
       }
     },
     {
+      "label": "unknown-field-checkout",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA==",
+        "checkout": {
+          "roots": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "origin": "github.com/o/app"
+        }
+      }
+    },
+    {
+      "label": "unknown-field-intent",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA==",
+        "intent": "task"
+      }
+    },
+    {
       "label": "bad-uuid",
       "message": {
         "id": "not-a-uuid",

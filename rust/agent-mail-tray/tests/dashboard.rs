@@ -42,6 +42,8 @@ fn home(dir: &Path) -> std::path::PathBuf {
         auto_reply: None,
         in_reply_to: None,
         project: Some("demo".into()),
+        checkout: None,
+        intent: None,
         signature: String::new(),
     };
     let received = message(

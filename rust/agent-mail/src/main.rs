@@ -87,6 +87,12 @@ enum Command {
         /// Project tag (agent-mail/1.2); dropped for peers that don't accept it.
         #[arg(long)]
         project: Option<String>,
+        /// `auto`: send this folder's repo identity (root commits, origin, head, branch; agent-mail/1.3).
+        #[arg(long, value_parser = ["auto"])]
+        checkout: Option<String>,
+        /// `notify` wakes a live session; `task` runs an agent in the matched checkout (agent-mail/1.3).
+        #[arg(long, value_parser = ["notify", "task"])]
+        intent: Option<String>,
         /// How long to wait for the mailer's first attempt before reporting "queued".
         #[arg(long, default_value_t = 8000)]
         wait_ms: u64,
@@ -400,6 +406,8 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
             model,
             session,
             project,
+            checkout,
+            intent,
             wait_ms,
         } => {
             let text = match (text, file) {
@@ -414,6 +422,8 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
                 conversation_id: conversation,
                 agent: agent_profile(harness, agent_name, model, session),
                 project,
+                checkout: checkout_arg(checkout.as_deref())?,
+                intent: intent_arg(intent.as_deref()),
                 ..SendRequest::default()
             };
             return match ops::send_and_wait(home, request, Duration::from_millis(wait_ms))? {
@@ -761,4 +771,27 @@ fn task(program: Program, home: &Path, action: TaskAction) -> Result<Value, Fail
         TaskAction::Uninstall => install::uninstall(&program, home)?,
         TaskAction::Status => install::status(&program, home)?,
     })
+}
+
+/// `--checkout auto`: the repo identity of the current folder, or an error outside a checkout.
+fn checkout_arg(
+    value: Option<&str>,
+) -> Result<Option<mail_core::envelope::Checkout>, Box<dyn std::error::Error>> {
+    match value {
+        None => Ok(None),
+        Some(_) => {
+            let here = std::env::current_dir()?;
+            mail_core::checkout::local_checkout(&here)
+                .map(Some)
+                .ok_or_else(|| "--checkout auto: this folder is not inside a git checkout".into())
+        }
+    }
+}
+
+fn intent_arg(value: Option<&str>) -> Option<mail_core::envelope::Intent> {
+    match value {
+        Some("notify") => Some(mail_core::envelope::Intent::Notify),
+        Some("task") => Some(mail_core::envelope::Intent::Task),
+        _ => None,
+    }
 }

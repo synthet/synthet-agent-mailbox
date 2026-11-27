@@ -42,6 +42,9 @@ pub struct Policy {
     /// Renamed repos: an old normalized origin (`host/owner/name`) mapped to the current one.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub origin_aliases: std::collections::BTreeMap<String, String>,
+    /// `false` keeps the repo identity (envelope 1.3 `checkout`) on this PC (ADR 0006 decision 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_checkout: Option<bool>,
 }
 
 fn empty_object() -> Value {
@@ -65,6 +68,7 @@ impl Policy {
             default_workspace: None,
             checkout_roots: Vec::new(),
             origin_aliases: Default::default(),
+            share_checkout: None,
         }
     }
 

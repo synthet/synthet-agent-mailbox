@@ -87,11 +87,12 @@ pub fn poke(home: &Path) -> bool {
 /// Which envelope a pinned peer accepts, as the mailer probed it (`envelope <fp>`). `None` when no
 /// mailer answers, which callers treat as "can't confirm".
 pub fn envelope(home: &Path, fp: &str) -> Option<crate::envelope::Envelope> {
-    use crate::envelope::{Envelope, ENVELOPE_V1_1, ENVELOPE_V1_2};
+    use crate::envelope::{Envelope, ENVELOPE_V1_1, ENVELOPE_V1_2, ENVELOPE_V1_3};
     match request(home, &format!("envelope {fp}"), Duration::from_secs(6))
         .ok()?
         .as_str()
     {
+        reply if reply == ENVELOPE_V1_3 => Some(Envelope::V1_3),
         reply if reply == ENVELOPE_V1_2 => Some(Envelope::V1_2),
         reply if reply == ENVELOPE_V1_1 => Some(Envelope::V1_1),
         "agent-mail/1" => Some(Envelope::V1_0),

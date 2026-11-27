@@ -27,7 +27,34 @@ fn cli_sync(home: &Path, args: &[&str]) -> Run {
         .env_remove("AGENT_MAIL_AGENT_NAME")
         .env_remove("AGENT_MAIL_MODEL")
         .env_remove("AGENT_MAIL_SESSION")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .output()
+        .unwrap();
+    Run {
+        code: output.status.code().unwrap_or(-1),
+        out: serde_json::from_slice(&output.stdout).unwrap_or(Value::Null),
+        err: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// `cli_sync` run from `cwd` with extra environment, off the runtime like `cli`.
+async fn cli_in(home: &Path, cwd: &Path, env: &[(&str, &str)], args: &[&str]) -> Run {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agent-mail"));
+    command
+        .arg("--home")
+        .arg(home)
+        .args(args)
+        .current_dir(cwd)
+        .env_remove("AGENT_MAIL_HARNESS")
+        .env_remove("AGENT_MAIL_AGENT_NAME")
+        .env_remove("AGENT_MAIL_MODEL")
+        .env_remove("AGENT_MAIL_SESSION")
+        .env_remove("CLAUDE_CODE_SESSION_ID");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = tokio::task::spawn_blocking(move || command.output().unwrap())
+        .await
         .unwrap();
     Run {
         code: output.status.code().unwrap_or(-1),
@@ -375,6 +402,37 @@ async fn rust_delivers_to_a_typescript_peer_and_drops_the_project_tag() {
     assert_eq!(inbox[0]["text"], "hello TS from Rust");
     assert_eq!(inbox[0]["agent"]["session_id"], "s-1");
     assert!(inbox[0].get("project").is_none());
+
+    // agent-mail/1.3: a task is held for a peer that can't take it, never sent as a plain message.
+    let task = cli(
+        &p.alice,
+        &[
+            "send",
+            "tspeer",
+            "--text",
+            "do this",
+            "--intent",
+            "task",
+            "--wait-ms",
+            "3000",
+        ],
+    )
+    .await;
+    assert_eq!(task.code, 2, "{} {}", task.out, task.err);
+    assert_eq!(task.out["status"], "queued");
+    assert!(
+        task.out["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("task held"),
+        "{}",
+        task.out
+    );
+    assert_eq!(
+        node_cli(&ts, &["inbox"]).out.as_array().unwrap().len(),
+        1,
+        "nothing else arrived"
+    );
 }
 
 /// File name -> contents for every JSON file under the TS store areas.
@@ -581,5 +639,94 @@ async fn identity_output_can_be_passed_straight_to_trust() {
         .code,
         1,
         "fingerprint must match"
+    );
+}
+
+fn git_repo(dir: &Path, origin: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "root",
+        ],
+        vec!["remote", "add", "origin", origin],
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(&args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rust_to_rust_carries_the_checkout_intent_and_claude_session() {
+    let p = pair().await;
+    let repo = p.dir.path().join("repos").join("app");
+    git_repo(&repo, "git@github.com:Owner/App.git");
+    let sub = repo.join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let _alice_mailer = mailer(&p.alice, true).await;
+    let sent = cli_in(
+        &p.alice,
+        &sub,
+        &[("CLAUDE_CODE_SESSION_ID", "cc-session-1")],
+        &[
+            "send",
+            "bob",
+            "--text",
+            "look at this",
+            "--checkout",
+            "auto",
+            "--intent",
+            "notify",
+        ],
+    )
+    .await;
+    assert_eq!(sent.code, 0, "{} {}", sent.out, sent.err);
+    assert_eq!(sent.out["status"], "delivered");
+    assert!(
+        sent.out
+            .get("envelope_downgraded")
+            .is_none_or(|v| v == false),
+        "bob takes 1.3: {}",
+        sent.out
+    );
+
+    let inbox = cli(&p.bob, &["inbox"]).await.out;
+    let message = &inbox[0];
+    assert_eq!(message["intent"], "notify");
+    assert_eq!(message["checkout"]["origin"], "github.com/owner/app");
+    assert_eq!(message["checkout"]["name"], "app");
+    assert_eq!(message["checkout"]["roots"].as_array().unwrap().len(), 1);
+    assert_eq!(message["agent"]["session_id"], "cc-session-1");
+    let text = message.to_string();
+    assert!(
+        !text.contains(&*repo.to_string_lossy().replace('\\', "\\\\")),
+        "no path leaves the PC"
+    );
+
+    let outside = cli_in(
+        &p.alice,
+        p.dir.path(),
+        &[],
+        &["send", "bob", "--text", "x", "--checkout", "auto"],
+    )
+    .await;
+    assert_ne!(
+        outside.code, 0,
+        "--checkout auto outside a checkout is an error"
     );
 }

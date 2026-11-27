@@ -65,6 +65,8 @@ impl Pc {
             auto_reply: None,
             in_reply_to: None,
             project: None,
+            checkout: None,
+            intent: None,
             signature: String::new(),
         }
         .sign(&self.them, Envelope::V1_2)
@@ -79,6 +81,7 @@ impl Pc {
             .arg(&self.home)
             .args(args)
             .env_remove("AGENT_MAIL_SESSION")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -464,6 +467,7 @@ fn bare(args: &[&str], stdin: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_agent-mail"))
         .args(args)
         .env_remove("AGENT_MAIL_SESSION")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

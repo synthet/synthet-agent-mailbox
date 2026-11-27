@@ -68,6 +68,8 @@ fn message(from: &Identity, to: &Identity, id: &str, text: &str) -> Message {
         auto_reply: None,
         in_reply_to: None,
         project: Some("demo".into()),
+        checkout: None,
+        intent: None,
         signature: String::new(),
     }
     .sign(from, Envelope::V1_2)
@@ -150,7 +152,7 @@ async fn capabilities_identity_and_unknown_routes() {
         .await;
     assert_eq!(
         caps,
-        serde_json::json!({ "envelope": ["agent-mail/1.1", "agent-mail/1.2"] })
+        serde_json::json!({ "envelope": ["agent-mail/1.1", "agent-mail/1.2", "agent-mail/1.3"] })
     );
 
     let nonce = uuid::Uuid::new_v4().to_string();

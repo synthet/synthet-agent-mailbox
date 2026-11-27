@@ -62,6 +62,10 @@ pub struct SendArgs {
     in_reply_to: Option<String>,
     /// Project (workspace) tag the receiver maps to an allowed folder (agent-mail/1.2). Dropped, and reported as envelope_downgraded, for peers that don't accept it.
     project: Option<String>,
+    /// "auto": send the repo identity of this server's working folder (root commits, origin, head, branch; no paths) so the receiver finds its own checkout of the same repo (agent-mail/1.3).
+    checkout: Option<String>,
+    /// "notify" wakes the matching live session; "task" asks the receiver to run an agent in its checkout of the repo (agent-mail/1.3; a task is held for peers that don't accept 1.3).
+    intent: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -351,6 +355,35 @@ impl MailServer {
             auto_reply: args.auto_reply,
             in_reply_to: args.in_reply_to,
             project: args.project,
+            checkout: match args.checkout.as_deref() {
+                None => None,
+                Some("auto") => match std::env::current_dir()
+                    .ok()
+                    .and_then(|here| mail_core::checkout::local_checkout(&here))
+                {
+                    Some(checkout) => Some(checkout),
+                    None => {
+                        return Err(ErrorData::invalid_params(
+                            "checkout: this server's folder is not inside a git checkout",
+                            None,
+                        ))
+                    }
+                },
+                Some(_) => {
+                    return Err(ErrorData::invalid_params("checkout must be \"auto\"", None))
+                }
+            },
+            intent: match args.intent.as_deref() {
+                None => None,
+                Some("notify") => Some(mail_core::envelope::Intent::Notify),
+                Some("task") => Some(mail_core::envelope::Intent::Task),
+                Some(_) => {
+                    return Err(ErrorData::invalid_params(
+                        "intent must be \"notify\" or \"task\"",
+                        None,
+                    ))
+                }
+            },
         };
         let home = self.home.clone();
         result(

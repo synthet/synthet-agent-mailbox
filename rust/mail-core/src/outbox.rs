@@ -49,7 +49,7 @@ pub struct Counts {
 }
 
 fn parse_stored(json: &str) -> Result<Message> {
-    serde_json::from_str::<Message>(json)?.normalized(Envelope::V1_2)
+    serde_json::from_str::<Message>(json)?.normalized(Envelope::LATEST)
 }
 
 /// TS `conflicts()`: the same id must mean the same message.

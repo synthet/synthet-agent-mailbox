@@ -186,7 +186,7 @@ fn accept(receiver: &Receiver, body: &[u8]) -> Result<Accepted, Failure> {
             &receiver.identity,
             packet,
             trusted,
-            Envelope::V1_2,
+            Envelope::LATEST,
             now_ms(),
         )
         .map_err(|_| Failure::Rejected)?

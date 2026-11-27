@@ -639,6 +639,8 @@ mod tests {
             auto_reply: None,
             in_reply_to: None,
             project: None,
+            checkout: None,
+            intent: None,
             signature: String::new(),
         }
     }

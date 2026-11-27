@@ -324,6 +324,45 @@ pub fn scan(roots: &[PathBuf]) -> Vec<Candidate> {
     found
 }
 
+/// The sender's side (ADR 0006 decision 1): the identity of the repo that holds `dir`, as envelope
+/// 1.3 `checkout` carries it. `None` outside a git checkout. No path leaves this function.
+pub fn local_checkout(dir: &Path) -> Option<crate::envelope::Checkout> {
+    let top = dir
+        .ancestors()
+        .find(|folder| folder.join(".git").exists())?;
+    let id = identify(top)?;
+    let hash = |value: Option<String>| {
+        value
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| {
+                matches!(value.len(), 40 | 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+    };
+    let mut checkout = crate::envelope::Checkout {
+        roots: id.roots.into_iter().take(4).collect(),
+        origin: id.origin,
+        head: hash(git(top, &["rev-parse", "HEAD"])),
+        branch: git(top, &["symbolic-ref", "--short", "-q", "HEAD"])
+            .map(|branch| branch.trim().to_owned())
+            .filter(|branch| !branch.is_empty()),
+        name: top
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+    };
+    // Optional parts that don't fit the envelope's limits are left out rather than failing the send.
+    for clear in [
+        |c: &mut crate::envelope::Checkout| c.branch = None,
+        |c: &mut crate::envelope::Checkout| c.name = None,
+        |c: &mut crate::envelope::Checkout| c.origin = None,
+    ] {
+        if checkout.is_valid() {
+            break;
+        }
+        clear(&mut checkout);
+    }
+    checkout.is_valid().then_some(checkout)
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Cache {
     #[serde(default)]
@@ -700,5 +739,23 @@ mod tests {
                 bogus.display()
             );
         }
+    }
+
+    #[test]
+    fn local_checkout_names_the_repo_from_any_subfolder() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("my-app");
+        repo(&app, Some("git@github.com:Owner/My-App.git"));
+        let sub = app.join("src").join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        let checkout = local_checkout(&sub).unwrap();
+        assert_eq!(checkout.roots, identify(&app).unwrap().roots);
+        assert_eq!(checkout.origin.as_deref(), Some("github.com/owner/my-app"));
+        assert_eq!(checkout.name.as_deref(), Some("my-app"));
+        assert!(checkout.head.as_deref().is_some_and(|h| h.len() == 40));
+        assert!(checkout.branch.is_some());
+        assert!(checkout.is_valid());
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(local_checkout(plain.path()), None, "not a checkout");
     }
 }
