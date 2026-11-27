@@ -269,27 +269,78 @@ pub fn local_origin() -> Origin {
     }
 }
 
-/// Agent metadata from flags, falling back to `AGENT_MAIL_*` (`agentProfileFromEnv`).
+/// Agent metadata from flags, falling back to `AGENT_MAIL_*` (`agentProfileFromEnv`). For a
+/// command run from a Claude Code session (CLI), the session id also falls back to that session's
+/// `CLAUDE_CODE_SESSION_ID`; see [`session_id`].
 pub fn agent_profile(
     harness: Option<String>,
     name: Option<String>,
     model: Option<String>,
     session_id: Option<String>,
 ) -> Option<AgentMeta> {
-    let pick = |value: Option<String>, env: &str| {
-        value
-            .or_else(|| std::env::var(env).ok())
-            .filter(|value| !value.trim().is_empty())
+    agent_profile_with(harness, name, model, session_id, true)
+}
+
+/// `agent_profile` without the Claude Code fallback, for a long-lived process such as the MCP
+/// server, whose environment is fixed at start and can name a session that has since changed.
+pub fn agent_profile_fixed(
+    harness: Option<String>,
+    name: Option<String>,
+    model: Option<String>,
+    session_id: Option<String>,
+) -> Option<AgentMeta> {
+    agent_profile_with(harness, name, model, session_id, false)
+}
+
+fn agent_profile_with(
+    harness: Option<String>,
+    name: Option<String>,
+    model: Option<String>,
+    session: Option<String>,
+    claude_fallback: bool,
+) -> Option<AgentMeta> {
+    let env = |name: &str| std::env::var(name).ok();
+    let pick = |value: Option<String>, name: &str| {
+        value.or_else(|| env(name)).filter(|v| !v.trim().is_empty())
     };
+    let harness = pick(harness, "AGENT_MAIL_HARNESS");
     let agent = AgentMeta {
-        harness: pick(harness, "AGENT_MAIL_HARNESS"),
         name: pick(name, "AGENT_MAIL_AGENT_NAME"),
         model: pick(model, "AGENT_MAIL_MODEL"),
-        // Claude Code exports its own session id to hooks and Bash (ADR 0006 decision 1).
-        session_id: pick(session_id, "AGENT_MAIL_SESSION")
-            .or_else(|| pick(None, "CLAUDE_CODE_SESSION_ID")),
+        session_id: session_id(
+            session,
+            env("AGENT_MAIL_SESSION"),
+            claude_fallback
+                .then(|| env("CLAUDE_CODE_SESSION_ID"))
+                .flatten(),
+            harness.as_deref(),
+        ),
+        harness,
     };
     (agent != AgentMeta::default()).then_some(agent)
+}
+
+/// The session id to send: the explicit one, then `AGENT_MAIL_SESSION`, then Claude Code's own
+/// `CLAUDE_CODE_SESSION_ID` (ADR 0006 decision 1), but that last one only when the harness is
+/// Claude. A Codex or other harness started from a Claude session's shell inherits the variable,
+/// and using it would label the message with the wrong session.
+pub fn session_id(
+    explicit: Option<String>,
+    agent_mail: Option<String>,
+    claude_code: Option<String>,
+    harness: Option<&str>,
+) -> Option<String> {
+    let usable = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.trim().is_empty());
+    if usable(&explicit) {
+        return explicit;
+    }
+    if usable(&agent_mail) {
+        return agent_mail;
+    }
+    let claude = harness.is_some_and(|h| h.trim().to_ascii_lowercase().starts_with("claude"));
+    claude_code
+        .filter(|_| claude)
+        .filter(|v| !v.trim().is_empty())
 }
 
 /// Validates an endpoint as TS `validateEndpoint` does: `http://host:port` and nothing else.
@@ -310,6 +361,37 @@ pub fn validate_endpoint(endpoint: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_claude_session_id_is_used_only_for_a_claude_harness_and_never_wins() {
+        let s = |v: &str| Some(v.to_owned());
+        assert_eq!(session_id(s("x"), s("am"), s("cc"), Some("claude")), s("x"));
+        assert_eq!(
+            session_id(None, s("am"), s("cc"), Some("claude")),
+            s("am"),
+            "AGENT_MAIL_SESSION wins"
+        );
+        assert_eq!(session_id(None, None, s("cc"), Some("claude")), s("cc"));
+        assert_eq!(
+            session_id(None, None, s("cc"), Some("Claude-Code")),
+            s("cc")
+        );
+        assert_eq!(
+            session_id(None, None, s("cc"), Some("codex")),
+            None,
+            "inherited by another harness"
+        );
+        assert_eq!(
+            session_id(None, None, s("cc"), None),
+            None,
+            "no harness: can't tell"
+        );
+        assert_eq!(
+            session_id(s(" "), None, s("cc"), Some("claude")),
+            s("cc"),
+            "blank explicit is ignored"
+        );
+    }
     use crate::runs::Run;
 
     struct RunFixture {

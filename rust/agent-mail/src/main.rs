@@ -15,7 +15,9 @@ use clap::{Parser, Subcommand};
 use mail_core::identity::{fingerprint, validate_public, Identity, PublicIdentity};
 use mail_core::migrate::{import_journal, import_json_store};
 use mail_core::policy::Policy;
-use mail_core::send::{agent_profile, local_origin, validate_endpoint, ReplyRequest, SendRequest};
+use mail_core::send::{
+    agent_profile, agent_profile_fixed, local_origin, validate_endpoint, ReplyRequest, SendRequest,
+};
 use mail_core::sessions::{Publish, Registration};
 use mail_core::store::{now_ms, Store};
 use mail_core::{ipc, js};
@@ -661,7 +663,8 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
             no_listen: _,
             run,
         } => {
-            let agent = agent_profile(harness, agent_name, model, None);
+            // The server's environment is fixed at start, so it never borrows a Claude session id.
+            let agent = agent_profile_fixed(harness, agent_name, model, None);
             let run = run.map(RunContext::from_env).transpose()?;
             tokio::runtime::Runtime::new()?
                 .block_on(agent_mail::mcp::serve(home.to_path_buf(), agent, run))

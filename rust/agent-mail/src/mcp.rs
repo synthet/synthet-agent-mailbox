@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use mail_core::envelope::AgentMeta;
-use mail_core::send::{agent_profile, ReplyRequest, SendRequest};
+use mail_core::send::{agent_profile_fixed, ReplyRequest, SendRequest};
 use mail_core::sessions::{Publish, Registration};
 use mail_core::store::{now_ms, Store};
 use mail_core::{ipc, Identity};
@@ -338,7 +338,7 @@ impl MailServer {
             return refused;
         }
         let defaults = self.agent.clone().unwrap_or_default();
-        let agent = agent_profile(
+        let agent = agent_profile_fixed(
             args.harness.or(defaults.harness),
             args.agent_name.or(defaults.name),
             args.model.or(defaults.model),

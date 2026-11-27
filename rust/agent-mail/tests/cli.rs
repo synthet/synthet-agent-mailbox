@@ -692,6 +692,8 @@ async fn rust_to_rust_carries_the_checkout_intent_and_claude_session() {
             "auto",
             "--intent",
             "notify",
+            "--harness",
+            "claude",
         ],
     )
     .await;
@@ -729,4 +731,27 @@ async fn rust_to_rust_carries_the_checkout_intent_and_claude_session() {
         outside.code, 0,
         "--checkout auto outside a checkout is an error"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_harness_started_from_a_claude_shell_sends_no_claude_session_id() {
+    let p = pair().await;
+    let _alice_mailer = mailer(&p.alice, true).await;
+    let sent = cli_in(
+        &p.alice,
+        p.dir.path(),
+        &[("CLAUDE_CODE_SESSION_ID", "cc-parent")],
+        &["send", "bob", "--text", "from codex", "--harness", "codex"],
+    )
+    .await;
+    assert_eq!(sent.out["status"], "delivered", "{} {}", sent.out, sent.err);
+    let inbox = cli(&p.bob, &["inbox"]).await.out;
+    let message = inbox
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["text"] == "from codex")
+        .unwrap();
+    assert_eq!(message["agent"]["harness"], "codex");
+    assert!(message["agent"].get("session_id").is_none(), "{message}");
 }

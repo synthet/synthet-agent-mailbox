@@ -19,7 +19,8 @@ const DRIVER: &str = r#"
 const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { StdioClientTransport, getDefaultEnvironment } = await import("@modelcontextprotocol/sdk/client/stdio.js");
 // The SDK passes only a short allowlist of variables to the server; run mode needs the token too.
-const env = process.env.AGENT_MAIL_RUN_TOKEN ? { ...getDefaultEnvironment(), AGENT_MAIL_RUN_TOKEN: process.env.AGENT_MAIL_RUN_TOKEN } : undefined;
+const extra = Object.fromEntries(["AGENT_MAIL_RUN_TOKEN", "CLAUDE_CODE_SESSION_ID"].filter((k) => process.env[k]).map((k) => [k, process.env[k]]));
+const env = Object.keys(extra).length ? { ...getDefaultEnvironment(), ...extra } : undefined;
 const transport = new StdioClientTransport({ command: process.env.BIN, args: JSON.parse(process.env.ARGS), env, stderr: "pipe" });
 const client = new Client({ name: "rust-mcp-test", version: "1.0.0" });
 await client.connect(transport);
@@ -41,8 +42,22 @@ fn mcp(home: &Path, calls: Value) -> Value {
     mcp_run(home, None, calls)
 }
 
+/// `mcp` with the server started under a Claude session id in its environment.
+fn mcp_claude_env(home: &Path, claude_session: &str, calls: Value) -> Value {
+    mcp_with(home, None, Some(claude_session), calls)
+}
+
 /// `mcp`, or with `run = Some((run_id, token))` run mode: `--run <id>` and AGENT_MAIL_RUN_TOKEN.
 fn mcp_run(home: &Path, run: Option<(&str, &str)>, calls: Value) -> Value {
+    mcp_with(home, run, None, calls)
+}
+
+fn mcp_with(
+    home: &Path,
+    run: Option<(&str, &str)>,
+    claude_session: Option<&str>,
+    calls: Value,
+) -> Value {
     let mut args = json!([
         "--home",
         home,
@@ -61,16 +76,18 @@ fn mcp_run(home: &Path, run: Option<(&str, &str)>, calls: Value) -> Value {
             .extend([json!("--run"), json!(run_id)]);
         command.env("AGENT_MAIL_RUN_TOKEN", token);
     }
-    let output = command
+    command
         .args(["--input-type=module", "-e", DRIVER])
         .current_dir(repo())
         .env("BIN", env!("CARGO_BIN_EXE_agent-mail"))
         .env("ARGS", args.to_string())
         .env("CALLS", calls.to_string())
         .env_remove("AGENT_MAIL_SESSION")
-        .env_remove("CLAUDE_CODE_SESSION_ID")
-        .output()
-        .expect("node is on PATH");
+        .env_remove("CLAUDE_CODE_SESSION_ID");
+    if let Some(session) = claude_session {
+        command.env("CLAUDE_CODE_SESSION_ID", session);
+    }
+    let output = command.output().expect("node is on PATH");
     assert!(
         output.status.success(),
         "driver failed: {}",
@@ -702,4 +719,80 @@ fn migrate_leaves_policy_json_and_the_ts_home_alone() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(!bare.join("mail.db").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_mcp_server_never_labels_mail_with_a_claude_session_id_from_its_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let (alice, bob) = (dir.path().join("alice"), dir.path().join("bob"));
+    let alice_id = cli(&alice, &["init", "--name", "alice"]);
+    let bob_id = cli(&bob, &["init", "--name", "bob"]);
+    let (alice_mailer, bob_mailer) = (mailer(&alice).await, mailer(&bob).await);
+    let to_bob = format!("http://127.0.0.1:{}", bob_mailer.port);
+    let to_alice = format!("http://127.0.0.1:{}", alice_mailer.port);
+    cli(
+        &alice,
+        &[
+            "trust",
+            "--file",
+            public_file(dir.path(), &bob_id).to_str().unwrap(),
+            "--fingerprint",
+            bob_id["fingerprint"].as_str().unwrap(),
+            "--endpoint",
+            &to_bob,
+        ],
+    );
+    cli(
+        &bob,
+        &[
+            "trust",
+            "--file",
+            public_file(dir.path(), &alice_id).to_str().unwrap(),
+            "--fingerprint",
+            alice_id["fingerprint"].as_str().unwrap(),
+            "--endpoint",
+            &to_alice,
+        ],
+    );
+    allow(&alice, &["bob"]);
+
+    let home = alice.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        mcp_claude_env(
+            &home,
+            "cc-stale",
+            json!([
+                { "name": "whoami", "arguments": {} },
+                { "name": "send_message", "arguments": { "recipient": "bob", "text": "no session given" } },
+                { "name": "send_message", "arguments": { "recipient": "bob", "text": "session given", "session_id": "s1" } },
+            ]),
+        )
+    })
+    .await
+    .unwrap();
+    let results = out["results"].as_array().unwrap();
+    let whoami = text(&results[0]);
+    assert_eq!(whoami["agent"]["harness"], "claude-code");
+    assert!(whoami["agent"].get("session_id").is_none(), "{whoami}");
+    for result in &results[1..] {
+        assert_eq!(text(result)["status"], "delivered", "{result}");
+    }
+    let inbox = cli(&bob, &["inbox"]);
+    let by_text = |t: &str| {
+        inbox
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["text"] == t)
+            .unwrap()
+            .clone()
+    };
+    assert!(
+        by_text("no session given")["agent"]
+            .get("session_id")
+            .is_none(),
+        "the stale id is never used"
+    );
+    assert_eq!(by_text("session given")["agent"]["session_id"], "s1");
+    assert!(!inbox.to_string().contains("cc-stale"));
 }
