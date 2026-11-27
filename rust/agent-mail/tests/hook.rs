@@ -20,6 +20,14 @@ struct Pc {
     them: Identity,
 }
 
+/// An empty Claude Code config folder for the hook processes, shared by this test binary.
+fn empty_claude_config() -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| tempfile::tempdir().unwrap())
+        .path()
+        .to_path_buf()
+}
+
 fn pc() -> Pc {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("me");
@@ -82,6 +90,9 @@ impl Pc {
             .args(args)
             .env_remove("AGENT_MAIL_SESSION")
             .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("CLAUDE_PID")
+            // Claude Code's session records come from an empty folder, never the real ~/.claude/sessions.
+            .env("CLAUDE_CONFIG_DIR", empty_claude_config())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -468,6 +479,9 @@ fn bare(args: &[&str], stdin: &str) -> Output {
         .args(args)
         .env_remove("AGENT_MAIL_SESSION")
         .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("CLAUDE_PID")
+        // Claude Code's session records come from an empty folder, never the real ~/.claude/sessions.
+        .env("CLAUDE_CONFIG_DIR", empty_claude_config())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
