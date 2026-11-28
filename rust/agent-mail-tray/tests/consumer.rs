@@ -6,7 +6,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agent_mail_tray::consumer::{default_runners, tick, RateWindow};
+use agent_mail_tray::consumer::{default_runners, spawn, tick, RateWindow};
 use agent_maild::{start, Config, Mailer};
 use mail_core::envelope::Message;
 use mail_core::send::{submit, SendRequest};
@@ -359,5 +359,65 @@ async fn tagged_mail_runs_in_its_folder_and_the_reply_comes_back_with_the_guards
     assert!(
         inbox(&bob.home).len() >= 7,
         "the consumer never acknowledges mail"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_running_consumer_handles_new_mail_within_two_seconds() {
+    let dir = tempfile::tempdir().unwrap();
+    let (alice, bob) = (pc(dir.path(), "alice").await, pc(dir.path(), "bob").await);
+    pin(&alice, &bob, bob._mailer.port);
+    pin(&bob, &alice, alice._mailer.port);
+    let alice_fp = alice.identity.fingerprint().unwrap();
+    std::fs::write(
+        alice.home.join("policy.json"),
+        json!({ "allowed_peers": ["bob"], "max_bytes": 16384 }).to_string(),
+    )
+    .unwrap();
+    // A listed peer with nothing configured: each message is a quick, logged skip.
+    std::fs::write(bob.home.join("policy.json"), json!({
+        "allowed_peers": ["alice"], "max_bytes": 16384,
+        "dispatch": { "enabled": true, "limits": { "per_peer_per_minute": 10 }, "peers": { alice_fp: {} } }
+    }).to_string()).unwrap();
+
+    let _consumer = spawn(bob.home.clone(), default_runners());
+    let home = bob.home.clone();
+    wait_for(move || {
+        Store::open(&home)
+            .unwrap()
+            .consumer_started()
+            .unwrap()
+            .then_some(())
+    })
+    .await;
+
+    let id = send(&alice, "bob", "are you there?", None, |_| {});
+    let bob_home = bob.home.clone();
+    let wanted = id.clone();
+    wait_for(move || {
+        inbox(&bob_home)
+            .iter()
+            .any(|m| m.id == wanted)
+            .then_some(())
+    })
+    .await;
+    let stored = Instant::now();
+    let ledger = bob.home.join("ledger.jsonl");
+    let handled = loop {
+        if std::fs::read_to_string(&ledger)
+            .unwrap_or_default()
+            .contains(&id)
+        {
+            break stored.elapsed();
+        }
+        assert!(
+            stored.elapsed() < Duration::from_secs(10),
+            "the consumer never handled it"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(
+        handled < Duration::from_secs(2),
+        "handled {handled:?} after it was stored"
     );
 }
