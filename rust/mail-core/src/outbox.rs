@@ -311,7 +311,8 @@ impl Store {
     pub fn failed_attempt(&self, id: &str, error: &str, next_attempt_at: u64) -> Result<()> {
         self.conn
             .execute(
-                "UPDATE outbox SET attempts = attempts + 1, last_error = ?2, next_attempt_at = ?3 WHERE id = ?1",
+                // An expired row keeps its reason and attempt count.
+                "UPDATE outbox SET attempts = attempts + 1, last_error = ?2, next_attempt_at = ?3 WHERE id = ?1 AND state = 'queued'",
                 params![id, error, next_attempt_at as i64],
             )
             .map_err(db)?;
@@ -540,10 +541,12 @@ impl Store {
     }
 
     /// Queued messages with their attempts and last error, newest first, for the dashboard.
-    pub fn outbox_rows(&self, limit: usize) -> Result<Vec<(Message, u32, Option<String>)>> {
+    /// Recent outbox rows with their attempts, last error and state (`queued` or `expired`).
+    #[allow(clippy::type_complexity)]
+    pub fn outbox_rows(&self, limit: usize) -> Result<Vec<(Message, u32, Option<String>, String)>> {
         let mut statement = self
             .conn
-            .prepare("SELECT message_json, attempts, last_error FROM outbox ORDER BY created_at DESC LIMIT ?1")
+            .prepare("SELECT message_json, attempts, last_error, state FROM outbox ORDER BY created_at DESC LIMIT ?1")
             .map_err(db)?;
         let rows = statement
             .query_map([limit as i64], |row| {
@@ -551,12 +554,13 @@ impl Store {
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })
             .map_err(db)?;
         rows.map(|row| {
-            let (json, attempts, error) = row.map_err(db)?;
-            Ok((parse_stored(&json)?, attempts as u32, error))
+            let (json, attempts, error, state) = row.map_err(db)?;
+            Ok((parse_stored(&json)?, attempts as u32, error, state))
         })
         .collect()
     }
@@ -611,6 +615,18 @@ mod tests {
             "{state:?}"
         );
         assert_eq!(serde_json::to_value(&state).unwrap()["status"], "expired");
+        // The mailer's usual failure bookkeeping leaves an expired row alone.
+        store
+            .failed_attempt(&message.id, "task_expired", 0)
+            .unwrap();
+        let rows = store.outbox_rows(10).unwrap();
+        assert_eq!(rows[0].1, 0, "attempts don't grow");
+        assert_eq!(
+            rows[0].2.as_deref(),
+            Some("task_expired: test"),
+            "the full reason is kept"
+        );
+        assert_eq!(rows[0].3, "expired");
     }
 
     #[test]

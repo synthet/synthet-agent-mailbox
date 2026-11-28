@@ -478,13 +478,67 @@ async fn rust_delivers_to_a_typescript_peer_and_drops_the_project_tag() {
     assert!(
         serde_json::to_string(&state)
             .unwrap()
-            .contains("task_expired"),
-        "{state:?}"
+            .contains("task_expired: the peer never accepted agent-mail/1.3"),
+        "the peer answered 1.1, and the full reason is kept: {state:?}"
     );
     assert_eq!(
         node_cli(&ts, &["inbox"]).out.as_array().unwrap().len(),
         1,
         "the old task never arrived"
+    );
+
+    // A peer whose endpoint never answers: the reason says so instead of blaming its version.
+    let ghost = p.dir.path().join("ghost");
+    let ghost_id = cli(&ghost, &["init", "--name", "ghost"]).await.out;
+    let ghost_file = public_file(p.dir.path(), "ghost", &ghost_id);
+    let ghost_fp = ghost_id["fingerprint"].as_str().unwrap().to_owned();
+    assert_eq!(
+        cli(
+            &p.alice,
+            &[
+                "trust",
+                "--file",
+                ghost_file.to_str().unwrap(),
+                "--fingerprint",
+                &ghost_fp,
+                "--endpoint",
+                "http://127.0.0.1:9"
+            ]
+        )
+        .await
+        .code,
+        0
+    );
+    let mut lost = old.clone();
+    lost.id = "00000000-0000-4000-8000-00000000e0e2".into();
+    lost.conversation_id = "00000000-0000-4000-8000-00000000e0e3".into();
+    lost.recipient = ghost_fp;
+    mail_core::store::Store::open(&p.alice)
+        .unwrap()
+        .queue(&lost, true)
+        .unwrap();
+    cli(&p.alice, &["flush"]).await;
+    let alice = p.alice.clone();
+    wait_for(move || {
+        matches!(
+            mail_core::store::Store::open(&alice)
+                .unwrap()
+                .delivery("00000000-0000-4000-8000-00000000e0e2")
+                .unwrap(),
+            Some(mail_core::outbox::Delivery::Expired { .. })
+        )
+    })
+    .await;
+    let state = mail_core::store::Store::open(&p.alice)
+        .unwrap()
+        .delivery("00000000-0000-4000-8000-00000000e0e2")
+        .unwrap()
+        .unwrap();
+    assert!(
+        serde_json::to_string(&state)
+            .unwrap()
+            .contains("the peer stayed unreachable"),
+        "{state:?}"
     );
 }
 

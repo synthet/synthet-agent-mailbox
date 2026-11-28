@@ -247,3 +247,27 @@ async fn kill_switch_needs_its_header_and_changes_only_dispatch_enabled() {
     assert_eq!(view["dispatch"]["enabled"], true);
     assert_eq!(view["wake"]["mode"], "on");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expired_outbox_row_shows_as_expired() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = home(dir.path());
+    Store::open(&home)
+        .unwrap()
+        .expire("00000000-0000-4000-8000-000000000002", "task_expired: test")
+        .unwrap();
+    let (port, _server) = start(home, SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .await
+        .unwrap();
+    let (status, body, _) = get(port, "/api/dashboard", None).await;
+    assert_eq!(status, 200);
+    let view: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(view["outbox"][0]["status"], "expired");
+    assert_eq!(view["outbox"][0]["last_error"], "task_expired: test");
+    assert_eq!(view["local"]["pending"], 0);
+    assert!(
+        view["log"].as_str().unwrap().contains("peer expired"),
+        "{}",
+        view["log"]
+    );
+}

@@ -126,11 +126,20 @@ impl Outbox {
             {
                 // Held too long: stop retrying so a peer that upgrades much later doesn't get a stale task.
                 if mail_core::outbox::task_hold_expired(message.created_at, now_ms()) {
+                    // Only a cached capability answer means the peer was reached and said < 1.3.
+                    let answered = self
+                        .capabilities
+                        .lock()
+                        .expect("capability cache")
+                        .get(&fp)
+                        .is_some_and(|(at, _)| at.elapsed() < CAPABILITY_TTL);
+                    let reason = if answered {
+                        "task_expired: the peer never accepted agent-mail/1.3"
+                    } else {
+                        "task_expired: the peer stayed unreachable"
+                    };
                     let id = row.id.clone();
-                    self.store(move |store| {
-                        store.expire(&id, "task_expired: the peer never accepted agent-mail/1.3")
-                    })
-                    .await?;
+                    self.store(move |store| store.expire(&id, reason)).await?;
                     return Err("task_expired".into());
                 }
                 return Err(

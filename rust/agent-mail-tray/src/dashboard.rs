@@ -358,11 +358,11 @@ fn try_snapshot(home: &Path) -> Result<Value, String> {
                 ),
             )
         }))
-        .chain(outbox.iter().map(|(m, _, _)| {
+        .chain(outbox.iter().map(|(m, _, _, state)| {
             (
                 m.created_at,
                 format!(
-                    "{} peer queued {} {}",
+                    "{} peer {state} {} {}",
                     iso(m.created_at),
                     name_of(&m.recipient),
                     m.text
@@ -401,9 +401,9 @@ fn try_snapshot(home: &Path) -> Result<Value, String> {
         "remote_error": null,
         "local": { "pending": counts.pending },
         "recent": recent.into_iter().map(|entry| entry.1).collect::<Vec<_>>(),
-        "outbox": outbox.iter().map(|(message, attempts, error)| json!({
+        "outbox": outbox.iter().map(|(message, attempts, error, state)| json!({
             "created_at": iso(message.created_at), "recipient": name_of(&message.recipient), "type": "peer",
-            "status": "queued", "attempts": attempts, "last_error": error.clone().unwrap_or_default(),
+            "status": state, "attempts": attempts, "last_error": error.clone().unwrap_or_default(),
         })).collect::<Vec<_>>(),
         "log": log.join("\n"),
         "hosts": hosts,
